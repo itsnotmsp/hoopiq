@@ -1,0 +1,82 @@
+{
+  "holdout": {
+    "accuracy": 0.6917,
+    "auc": 0.7527,
+    "log_loss": 0.5781,
+    "brier": 0.1979,
+    "n_samples": 493
+  },
+  "cv": {
+    "folds": [
+      {
+        "fold": 1,
+        "n_train": 818,
+        "n_test": 820,
+        "accuracy": 0.5963,
+        "auc": 0.6138,
+        "log_loss": 0.7253,
+        "brier": 0.2567
+      },
+      {
+        "fold": 2,
+        "n_train": 1638,
+        "n_test": 820,
+        "accuracy": 0.622,
+        "auc": 0.6793,
+        "log_loss": 0.6582,
+        "brier": 0.2316
+      },
+      {
+        "fold": 3,
+        "n_train": 2458,
+        "n_test": 820,
+        "accuracy": 0.6012,
+        "auc": 0.6376,
+        "log_loss": 0.7052,
+        "brier": 0.2486
+      },
+      {
+        "fold": 4,
+        "n_train": 3278,
+        "n_test": 820,
+        "accuracy": 0.6512,
+        "auc": 0.6966,
+        "log_loss": 0.6435,
+        "brier": 0.2229
+      },
+      {
+        "fold": 5,
+        "n_train": 4098,
+        "n_test": 820,
+        "accuracy": 0.6378,
+        "auc": 0.684,
+        "log_loss": 0.6465,
+        "brier": 0.2255
+      }
+    ],
+    "summary": {
+      "accuracy_mean": 0.6217,
+      "accuracy_std": 0.021,
+      "auc_mean": 0.6623,
+      "logloss_mean": 0.6757,
+      "brier_mean": 0.2371
+    }
+  },
+  "params": {
+    "n_estimators": 600,
+    "max_depth": 5,
+    "learning_rate": 0.03,
+    "subsample": 0.8,
+    "colsample_bytree": 0.7,
+    "min_child_weight": 5,
+    "gamma": 0.1,
+    "reg_alpha": 0.1,
+    "reg_lambda": 1.5,
+    "use_label_encoder": false,
+    "eval_metric": "logloss",
+    "random_state": 42,
+    "n_jobs": -1,
+    "tree_method": "hist"
+  },
+  "n_features": 141
+}
