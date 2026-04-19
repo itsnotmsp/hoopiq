@@ -442,4 +442,5 @@ async def predict_live():
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    uvicorn.run("5_api_server:app", host="0.0.0.0", port=8000, reload=True, log_level="info")
+    port = int(__import__("os").environ.get("PORT", 8000))
+    uvicorn.run("5_api_server:app", host="0.0.0.0", port=port, reload=False, log_level="info")
