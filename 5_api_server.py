@@ -444,3 +444,9 @@ async def predict_live():
 if __name__ == "__main__":
     port = int(__import__("os").environ.get("PORT", 8000))
     uvicorn.run("5_api_server:app", host="0.0.0.0", port=port, reload=False, log_level="info")
+
+from fastapi.responses import FileResponse
+
+@app.get("/")
+async def frontend():
+    return FileResponse("index.html")
