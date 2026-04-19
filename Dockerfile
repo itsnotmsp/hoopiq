@@ -12,3 +12,4 @@ COPY . .
 EXPOSE 8000
 
 CMD ["uvicorn", "5_api_server:app", "--host", "0.0.0.0", "--port", "8000"]
+# cache bust Sun Apr 19 15:34:19 +07 2026
