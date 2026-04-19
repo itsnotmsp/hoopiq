@@ -12,3 +12,4 @@ python-dotenv==1.0.1
 pydantic==2.8.2
 apscheduler==3.10.4
 rich==13.8.1
+pyarrow==15.0.2
