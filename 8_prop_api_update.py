@@ -1,3 +1,30 @@
+"""
+Player Props API Extensions
+-----------------------------
+Add these endpoints to 5_api_server.py.
+
+New endpoints:
+  GET  /players/today          — all players in tonight's games with prop lines
+  POST /props/player           — predict PTS/REB/AST/FPTS for one player
+  POST /props/batch            — predict all players for tonight
+  GET  /props/fantasy          — fantasy lineup recommendations
+  GET  /props/starts           — start/sit recommendations
+
+HOW TO ADD TO YOUR EXISTING 5_api_server.py:
+---------------------------------------------
+1. Copy the imports section below into 5_api_server.py imports
+2. Copy the ModelState additions into the ModelState class
+3. Copy the load_prop_models() call into the startup event
+4. Copy all the route handlers into 5_api_server.py
+
+Or just replace 5_api_server.py with the full version below.
+"""
+
+# ============================================================
+# FULL UPDATED 5_api_server.py WITH PLAYER PROPS
+# ============================================================
+
+SERVER_CODE = '''
 import asyncio
 import json
 import logging
@@ -88,7 +115,7 @@ async def load_models():
         df = pd.read_parquet(DATA_DIR / "player_logs.parquet")
         df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
         state.player_log_cache = df
-        log.info(f"Player log cache — {len(df):,} rows, {df['PLAYER_NAME'].nunique()} players")
+        log.info(f"Player log cache — {len(df):,} rows, {df[\'PLAYER_NAME\'].nunique()} players")
 
     if (DATA_DIR / "player_index.json").exists():
         state.player_index = json.loads((DATA_DIR / "player_index.json").read_text())
@@ -346,7 +373,7 @@ async def predict_batch(req: BatchPredictRequest):
         away_prob = 1.0 - home_prob
         winner = g["home_abbr"] if home_prob >= 0.5 else g["away_abbr"]
         results.append({
-            "game_id": g["game_id"], "matchup": f"{g['away_abbr']} @ {g['home_abbr']}",
+            "game_id": g["game_id"], "matchup": f"{g[\'away_abbr\']} @ {g[\'home_abbr\']}",
             "home_team": g["home_abbr"], "away_team": g["away_abbr"],
             "home_win_prob": round(home_prob,4), "away_win_prob": round(away_prob,4),
             "predicted_winner": winner, "confidence": confidence_label(max(home_prob,away_prob)),
@@ -371,8 +398,8 @@ async def predict_live():
         score_diff = g["home_score"] - g["away_score"]
         adjusted = float(np.clip(home_prob + np.tanh(score_diff/12.0)*0.10, 0.05, 0.95))
         results.append({
-            "game_id": g["game_id"], "matchup": f"{g['away_abbr']} @ {g['home_abbr']}",
-            "score": f"{g['away_score']} - {g['home_score']}",
+            "game_id": g["game_id"], "matchup": f"{g[\'away_abbr\']} @ {g[\'home_abbr\']}",
+            "score": f"{g[\'away_score\']} - {g[\'home_score\']}",
             "period": g["period"], "clock": g["clock"],
             "pre_game_home_prob": round(home_prob,4), "live_home_prob": round(adjusted,4),
             "predicted_winner": g["home_abbr"] if adjusted>=0.5 else g["away_abbr"],
@@ -445,7 +472,7 @@ async def predict_player_props(req: PropRequest):
 
 @app.get("/props/fantasy")
 async def fantasy_lineup(date_str: Optional[str] = None):
-    """Return fantasy recommendations for all players in tonight's games."""
+    """Return fantasy recommendations for all players in tonight\'s games."""
     if not state.prop_models or state.player_log_cache is None:
         raise HTTPException(503, "Prop models not loaded.")
 
@@ -532,3 +559,12 @@ if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("5_api_server:app", host="0.0.0.0", port=port, reload=False, log_level="info")
+'''
+
+from pathlib import Path
+
+if __name__ == "__main__":
+    out = Path("5_api_server.py")
+    out.write_text(SERVER_CODE.strip())
+    print(f"Written to {out}")
+    print("Run: python 7_player_model.py then git push")
