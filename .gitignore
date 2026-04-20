@@ -2,3 +2,5 @@ venv/
 *.pyc
 __pycache__/
 config.json
+data/odds_games.json
+data/odds_props.json
