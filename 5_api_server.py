@@ -567,7 +567,12 @@ async def odds_edge():
         ha = TEAM_NAME_TO_ABBR.get(g["home_team"], g["home_team"][:3].upper())
         aa = TEAM_NAME_TO_ABBR.get(g["away_team"], g["away_team"][:3].upper())
         if state.model and state.calibrated:
-            feats = build_game_features(ha, aa, today)
+            feats = None
+        if state.game_log_cache is not None and state.calibrated is not None:
+            try:
+                feats = build_game_features(ha, aa, today)
+            except Exception:
+                feats = None
             model_hp = float(state.calibrated.predict_proba(feats)[0][1]) if feats is not None else 0.585
         else:
             model_hp = 0.585
