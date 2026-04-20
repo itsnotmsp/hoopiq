@@ -1,307 +1,355 @@
 """
-Step 6 — Player Props Data Pipeline (ESPN API)
-------------------------------------------------
-Pulls player game logs for all active NBA players.
-Saves per-player rolling stats used for prop predictions.
+Step 6 — Player Pipeline (NBA.com real stats via nba_api)
+----------------------------------------------------------
+Pulls REAL per-game player stats directly from stats.nba.com.
+No fake data, no simulation — actual PTS/REB/AST/MIN per game.
+
+Covers top 60 NBA players for the 2024-25 season.
 
 Usage:
-    python 6_player_pipeline.py              # pull 2024-25 + 2025-26
-    python 6_player_pipeline.py --update     # append new games only
+    python 6_player_pipeline.py           # pull all players (~5 min)
+    python 6_player_pipeline.py --update  # append new games only
+    python 6_player_pipeline.py --test    # test one player (Tatum)
 
 Output:
-    data/player_logs.parquet     — one row per player per game
-    data/player_index.json       — player name → ESPN ID map
+    data/player_logs.parquet    — real per-game stats, one row per player per game
+    data/player_index.json      — player name → NBA ID map
 """
 
-import asyncio
 import argparse
 import json
+import time
+import warnings
 from pathlib import Path
 
-import httpx
+import numpy as np
 import pandas as pd
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn
+from rich.table import Table
+from rich import box
 
+warnings.filterwarnings("ignore")
 console = Console()
+
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 
-ESPN_BASE    = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba"
-ESPN_CORE    = "https://sports.core.api.espn.com/v2/sports/basketball/leagues/nba"
-HEADERS      = {"User-Agent": "HoopIQ/1.0", "Accept": "application/json"}
-SEASON_YEARS = [2025, 2026]
+SEASON       = "2024-25"
+REQUEST_DELAY = 2.0   # seconds between NBA.com requests (avoid rate limit)
 
-# Top 60 NBA players by ESPN athlete ID (stars + popular fantasy players)
+# ---------------------------------------------------------------------------
+# Top 60 NBA players  (NBA.com player IDs — stable forever)
+# ---------------------------------------------------------------------------
+
 TOP_PLAYERS = [
-    (3945274,  "Jayson Tatum",      "BOS"),
-    (3202,     "LeBron James",      "LAL"),
-    (3032977,  "Nikola Jokic",      "DEN"),
-    (3547303,  "Luka Doncic",       "DAL"),
-    (2490149,  "Giannis Antetokounmpo", "MIL"),
-    (4065648,  "Anthony Edwards",   "MIN"),
-    (3136193,  "Joel Embiid",       "PHI"),
-    (4066648,  "Ja Morant",         "MEM"),
-    (4277905,  "Zion Williamson",   "NOP"),
-    (4431678,  "Cade Cunningham",   "DET"),
-    (4395725,  "Paolo Banchero",    "ORL"),
-    (4432174,  "Victor Wembanyama", "SAS"),
-    (4683021,  "Chet Holmgren",     "OKC"),
-    (4277956,  "Jalen Green",       "HOU"),
-    (4432166,  "Franz Wagner",      "ORL"),
-    (3059318,  "Devin Booker",      "PHX"),
-    (3934672,  "Donovan Mitchell",  "CLE"),
-    (4066261,  "Trae Young",        "ATL"),
-    (3155942,  "Karl-Anthony Towns","NYK"),
-    (2991055,  "Jaylen Brown",      "BOS"),
-    (3913176,  "Bam Adebayo",       "MIA"),
-    (4066623,  "De'Aaron Fox",      "SAC"),
-    (4278129,  "Tyrese Haliburton", "IND"),
-    (3136779,  "Darius Garland",    "CLE"),
-    (3032976,  "Nikola Vucevic",    "CHI"),
-    (4066269,  "Brandon Ingram",    "NOP"),
-    (2490155,  "Khris Middleton",   "MIL"),
-    (3149673,  "CJ McCollum",       "NOP"),
-    (3064514,  "Kristaps Porzingis","BOS"),
-    (4066253,  "Lauri Markkanen",   "UTA"),
-    (4431992,  "Evan Mobley",       "CLE"),
-    (3032993,  "Pascal Siakam",     "IND"),
-    (3468781,  "OG Anunoby",        "NYK"),
-    (4066328,  "Scottie Barnes",    "TOR"),
-    (4065632,  "Alperen Sengun",    "HOU"),
-    (3055083,  "Jimmy Butler",      "MIA"),
-    (3136291,  "Bradley Beal",      "PHX"),
-    (3059319,  "Mikal Bridges",     "NYK"),
-    (4066269,  "Jordan Poole",      "WAS"),
-    (2779816,  "Stephen Curry",     "GSW"),
-    (3975,     "Kevin Durant",      "PHX"),
-    (3017,     "James Harden",      "LAC"),
-    (2991230,  "Kawhi Leonard",     "LAC"),
-    (3136228,  "Andrew Wiggins",    "GSW"),
-    (4432817,  "Jabari Smith Jr",   "HOU"),
-    (4277957,  "Keegan Murray",     "SAC"),
-    (4432773,  "Bennedict Mathurin","IND"),
-    (4432166,  "Jalen Williams",    "OKC"),
-    (4066390,  "Josh Giddey",       "CHI"),
-    (4066262,  "Desmond Bane",      "MEM"),
+    (1629029, "Luka Doncic",            "DAL"),
+    (203954,  "Joel Embiid",            "PHI"),
+    (203507,  "Giannis Antetokounmpo",  "MIL"),
+    (1628384, "Jayson Tatum",           "BOS"),
+    (203999,  "Nikola Jokic",           "DEN"),
+    (1630162, "Anthony Edwards",        "MIN"),
+    (1629627, "Ja Morant",              "MEM"),
+    (1629628, "Zion Williamson",        "NOP"),
+    (1631096, "Cade Cunningham",        "DET"),
+    (1631094, "Paolo Banchero",         "ORL"),
+    (1641705, "Victor Wembanyama",      "SAS"),
+    (1641706, "Chet Holmgren",          "OKC"),
+    (1630224, "Jalen Green",            "HOU"),
+    (1628369, "Devin Booker",           "PHX"),
+    (1628378, "Donovan Mitchell",       "CLE"),
+    (1629027, "Trae Young",             "ATL"),
+    (1629611, "Ja Morant",              "MEM"),
+    (1628389, "Jaylen Brown",           "BOS"),
+    (1628991, "Bam Adebayo",            "MIA"),
+    (1628368, "De'Aaron Fox",           "SAC"),
+    (1628978, "Tyrese Haliburton",      "IND"),
+    (1629029, "Luka Doncic",            "DAL"),
+    (1630559, "Evan Mobley",            "CLE"),
+    (1629057, "Scottie Barnes",         "TOR"),
+    (1630578, "Alperen Sengun",         "HOU"),
+    (202710,  "Jimmy Butler",           "MIA"),
+    (203076,  "Bradley Beal",           "PHX"),
+    (1628970, "Mikal Bridges",          "NYK"),
+    (201939,  "Stephen Curry",          "GSW"),
+    (201142,  "Kevin Durant",           "PHX"),
+    (203932,  "Kawhi Leonard",          "LAC"),
+    (203497,  "Karl-Anthony Towns",     "NYK"),
+    (1628384, "Jayson Tatum",           "BOS"),
+    (1629029, "Luka Doncic",            "DAL"),
+    (1630532, "Franz Wagner",           "ORL"),
+    (1629631, "Keegan Murray",          "SAC"),
+    (1631117, "Jabari Smith Jr",        "HOU"),
+    (1630581, "Jalen Williams",         "OKC"),
+    (1629673, "Josh Giddey",            "CHI"),
+    (1629012, "Desmond Bane",           "MEM"),
+    (203081,  "Damian Lillard",         "MIL"),
+    (1628463, "OG Anunoby",             "NYK"),
+    (1629684, "Jordan Poole",           "WAS"),
+    (203500,  "Rudy Gobert",            "MIN"),
+    (1629216, "Brandon Clarke",         "MEM"),
+    (1630717, "Jaden Ivey",             "DET"),
+    (1631107, "Bennedict Mathurin",     "IND"),
+    (1630224, "Jalen Green",            "HOU"),
+    (1628403, "Lauri Markkanen",        "UTA"),
+    (1629029, "Luka Doncic",            "DAL"),
 ]
-# Deduplicate
-seen = set()
-TOP_PLAYERS = [(pid,name,team) for pid,name,team in TOP_PLAYERS if not (pid in seen or seen.add(pid))]
+
+# Deduplicate by player ID
+seen_ids = set()
+PLAYERS = []
+for pid, name, team in TOP_PLAYERS:
+    if pid not in seen_ids:
+        seen_ids.add(pid)
+        PLAYERS.append((pid, name, team))
 
 
-async def fetch_player_gamelog(client: httpx.AsyncClient, player_id: int, season_year: int) -> list[dict]:
-    """Fetch game-by-game stats for one player via ESPN."""
+# ---------------------------------------------------------------------------
+# NBA.com fetcher using nba_api
+# ---------------------------------------------------------------------------
+
+def fetch_player_gamelog(player_id: int, player_name: str, season: str) -> pd.DataFrame:
+    """
+    Pull full game log for one player from NBA.com.
+    Returns DataFrame with one row per game played.
+    """
+    from nba_api.stats.endpoints import playergamelog
+    from nba_api.stats.library.parameters import SeasonTypeAllStar
+
     try:
-        url = f"{ESPN_BASE}/athletes/{player_id}/gamelog"
-        r = await client.get(url, params={"season": season_year}, timeout=15.0)
-        if r.status_code == 404:
-            return []
-        r.raise_for_status()
-        data = r.json()
-    except Exception:
-        return []
+        log = playergamelog.PlayerGameLog(
+            player_id=player_id,
+            season=season,
+            season_type_all_star=SeasonTypeAllStar.regular,
+            timeout=30,
+        )
+        df = log.get_data_frames()[0]
+    except Exception as e:
+        console.print(f"  [yellow]skip {player_name}: {e}[/yellow]")
+        return pd.DataFrame()
 
-    events   = data.get("events", {})
-    stats_by = data.get("seasonTypes", [])
-    labels   = []
-    for st in stats_by:
-        for cat in st.get("categories", []):
-            if cat.get("name") == "gameLog":
-                labels = [s.get("abbreviation","") for s in cat.get("stats",[])]
-                break
+    if df.empty:
+        return pd.DataFrame()
 
-    rows = []
-    for game_id, ev in events.items():
-        game_info = ev if isinstance(ev, dict) else {}
-        stats_raw = game_info.get("stats", [])
-        if not stats_raw or not labels:
-            continue
+    # Rename to our standard schema
+    rename = {
+        "Game_ID":      "GAME_ID",
+        "GAME_DATE":    "GAME_DATE",
+        "MATCHUP":      "MATCHUP",
+        "WL":           "WL",
+        "MIN":          "MIN",
+        "FGM":          "FGM",
+        "FGA":          "FGA",
+        "FG_PCT":       "FG_PCT",
+        "FG3M":         "FG3M",
+        "FG3A":         "FG3A",
+        "FG3_PCT":      "FG3_PCT",
+        "FTM":          "FTM",
+        "FTA":          "FTA",
+        "FT_PCT":       "FT_PCT",
+        "OREB":         "OREB",
+        "DREB":         "DREB",
+        "REB":          "REB",
+        "AST":          "AST",
+        "STL":          "STL",
+        "BLK":          "BLK",
+        "TOV":          "TOV",
+        "PF":           "PF",
+        "PTS":          "PTS",
+        "PLUS_MINUS":   "PLUS_MINUS",
+    }
+    df = df.rename(columns={k: v for k, v in rename.items() if k in df.columns})
 
-        stat_map = dict(zip(labels, stats_raw))
+    # Parse dates and home/away
+    df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], format="%b %d, %Y", errors="coerce")
+    df["IS_HOME"]   = ~df["MATCHUP"].str.contains("@", na=False)
+    df["OPP"]       = df["MATCHUP"].str.extract(r"(?:vs\.|@)\s+([A-Z]+)$")
+    df["WIN"]       = (df["WL"] == "W").astype(int)
+    df["RESULT"]    = df["WL"]
 
-        def g(k, default=0.0):
-            v = stat_map.get(k, default)
-            try: return float(v) if v not in ("", "--", None) else default
-            except: return default
+    # Player metadata
+    df["PLAYER_ID"]   = player_id
+    df["PLAYER_NAME"] = player_name
+    df["SEASON"]      = season
+    df["SEASON_YEAR"] = int(season.split("-")[0])
 
-        rows.append({
-            "PLAYER_ID":    player_id,
-            "GAME_ID":      game_id,
-            "SEASON_YEAR":  season_year,
-            "GAME_DATE":    game_info.get("gameDate", "")[:10],
-            "TEAM":         game_info.get("teamAbbrev", ""),
-            "OPP":          game_info.get("opponent", {}).get("abbreviation", "") if isinstance(game_info.get("opponent"), dict) else "",
-            "HOME":         not game_info.get("atVs", "") == "@",
-            "RESULT":       game_info.get("result", ""),
-            "MIN":  g("MIN"), "PTS":  g("PTS"), "REB":  g("REB"),
-            "AST":  g("AST"), "STL":  g("STL"), "BLK":  g("BLK"),
-            "TOV":  g("TO"),  "FGM":  g("FGM"), "FGA":  g("FGA"),
-            "FG3M": g("3PM"), "FG3A": g("3PA"), "FTM":  g("FTM"),
-            "FTA":  g("FTA"), "OREB": g("OR"),  "DREB": g("DR"),
-        })
+    # Numeric
+    num_cols = ["MIN","FGM","FGA","FG_PCT","FG3M","FG3A","FG3_PCT",
+                "FTM","FTA","FT_PCT","OREB","DREB","REB","AST","STL","BLK","TOV","PF","PTS","PLUS_MINUS"]
+    for col in num_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    return rows
-
-
-async def fetch_all_players(season_years: list[int]) -> pd.DataFrame:
-    all_rows = []
-    total = len(TOP_PLAYERS) * len(season_years)
-
-    async with httpx.AsyncClient(headers=HEADERS) as client:
-        with Progress(SpinnerColumn(), TextColumn("{task.description}"),
-                      BarColumn(), MofNCompleteColumn(), console=console) as prog:
-            task = prog.add_task("Fetching player logs...", total=total)
-
-            for season_year in season_years:
-                tasks = [fetch_player_gamelog(client, pid, season_year) for pid,_,_ in TOP_PLAYERS]
-                results = await asyncio.gather(*tasks)
-
-                season_rows = 0
-                for (pid, name, team), rows in zip(TOP_PLAYERS, results):
-                    for r in rows:
-                        r["PLAYER_NAME"] = name
-                        r["PLAYER_TEAM"] = team
-                    all_rows.extend(rows)
-                    season_rows += len(rows)
-                    prog.advance(task)
-
-                console.print(f"  [green]✓[/green] {season_year}: {season_rows} player-game rows")
-
-    if not all_rows:
-        console.print("[yellow]No player data found — ESPN athlete gamelog endpoint may require different IDs[/yellow]")
-        console.print("[dim]Generating synthetic data from game_logs.parquet for demonstration...[/dim]")
-        return generate_from_game_logs()
-
-    df = pd.DataFrame(all_rows)
-    df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], errors="coerce")
-    df = df.dropna(subset=["GAME_DATE"])
-    df = df[df["MIN"] > 0]  # only games where player actually played
-    df = df.drop_duplicates(subset=["PLAYER_ID","GAME_ID"])
-    df = df.sort_values(["PLAYER_ID","GAME_DATE"]).reset_index(drop=True)
-
-    # Add fantasy points (DraftKings scoring)
+    # DraftKings fantasy points
     df["FPTS"] = (
-        df["PTS"] * 1.0 +
-        df["REB"] * 1.25 +
-        df["AST"] * 1.5 +
-        df["STL"] * 2.0 +
-        df["BLK"] * 2.0 -
-        df["TOV"] * 0.5 +
-        (df["PTS"] >= 10).astype(int) * (df["REB"] >= 10).astype(int) * 1.5 +  # double-double bonus
-        (df["PTS"] >= 10).astype(int) * (df["REB"] >= 10).astype(int) * (df["AST"] >= 10).astype(int) * 3.0  # triple-double
+        df["PTS"]  * 1.0  +
+        df["REB"]  * 1.25 +
+        df["AST"]  * 1.5  +
+        df["STL"]  * 2.0  +
+        df["BLK"]  * 2.0  -
+        df["TOV"]  * 0.5  +
+        ((df["PTS"] >= 10) & (df["REB"] >= 10)).astype(int) * 1.5 +
+        ((df["PTS"] >= 10) & (df["REB"] >= 10) & (df["AST"] >= 10)).astype(int) * 3.0
     )
 
+    keep = ["PLAYER_ID","PLAYER_NAME","SEASON","SEASON_YEAR","GAME_ID","GAME_DATE",
+            "MATCHUP","IS_HOME","OPP","WL","WIN","RESULT",
+            "MIN","PTS","REB","AST","STL","BLK","TOV",
+            "FGM","FGA","FG_PCT","FG3M","FG3A","FG3_PCT",
+            "FTM","FTA","FT_PCT","OREB","DREB","PLUS_MINUS","FPTS"]
+    return df[[c for c in keep if c in df.columns]].copy()
+
+
+# ---------------------------------------------------------------------------
+# Pull all players
+# ---------------------------------------------------------------------------
+
+def pull_all_players(season: str = SEASON) -> pd.DataFrame:
+    frames = []
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        console=console,
+    ) as prog:
+        task = prog.add_task(f"Pulling {season}...", total=len(PLAYERS))
+
+        for player_id, name, team in PLAYERS:
+            prog.update(task, description=f"[cyan]{name:25s}[/cyan]")
+            df = fetch_player_gamelog(player_id, name, season)
+
+            if len(df):
+                frames.append(df)
+                console.print(
+                    f"  [green]✓[/green] {name:25s} — "
+                    f"{len(df):2d} games  "
+                    f"avg {df['PTS'].mean():.1f}pts "
+                    f"{df['REB'].mean():.1f}reb "
+                    f"{df['AST'].mean():.1f}ast"
+                )
+            else:
+                console.print(f"  [dim]- {name}: no data[/dim]")
+
+            prog.advance(task)
+            time.sleep(REQUEST_DELAY)
+
+    if not frames:
+        raise RuntimeError("No player data retrieved. Check internet connection.")
+
+    df = pd.concat(frames, ignore_index=True)
+    df = df.drop_duplicates(subset=["PLAYER_ID", "GAME_ID"])
+    df = df[df["MIN"] > 0]   # only games where player actually played
+    df = df.sort_values(["PLAYER_ID", "GAME_DATE"]).reset_index(drop=True)
     return df
 
 
-def generate_from_game_logs() -> pd.DataFrame:
-    """
-    Fallback: create realistic player logs from team game logs
-    by simulating per-player splits. Used if ESPN athlete API is unavailable.
-    """
-    import numpy as np
-    path = DATA_DIR / "game_logs.parquet"
-    if not path.exists():
-        return pd.DataFrame()
+# ---------------------------------------------------------------------------
+# Incremental update
+# ---------------------------------------------------------------------------
 
-    team_df = pd.read_parquet(path)
-    rows = []
-    rng = np.random.default_rng(42)
-
-    for pid, name, team in TOP_PLAYERS:
-        team_games = team_df[team_df["TEAM_ABBREVIATION"] == team].sort_values("GAME_DATE")
-        if len(team_games) == 0:
-            continue
-
-        # Assign realistic per-game stats based on player archetype
-        base_pts = rng.uniform(14, 32)
-        base_reb = rng.uniform(3, 12)
-        base_ast = rng.uniform(2, 9)
-        base_stl = rng.uniform(0.5, 2.0)
-        base_blk = rng.uniform(0.3, 2.0)
-        base_tov = rng.uniform(1.5, 4.0)
-        base_min = rng.uniform(28, 36)
-
-        for _, g in team_games.iterrows():
-            noise = lambda x: max(0, x + rng.normal(0, x * 0.25))
-            pts = round(noise(base_pts))
-            reb = round(noise(base_reb))
-            ast = round(noise(base_ast))
-            stl = round(noise(base_stl), 1)
-            blk = round(noise(base_blk), 1)
-            tov = round(noise(base_tov), 1)
-            mn  = round(noise(base_min), 1)
-
-            fpts = pts*1.0 + reb*1.25 + ast*1.5 + stl*2.0 + blk*2.0 - tov*0.5
-            rows.append({
-                "PLAYER_ID": pid, "PLAYER_NAME": name, "PLAYER_TEAM": team,
-                "GAME_ID": g["GAME_ID"], "GAME_DATE": g["GAME_DATE"],
-                "SEASON_YEAR": g.get("SEASON_YEAR", 2026),
-                "TEAM": team, "OPP": g.get("OPP_ABBR",""),
-                "HOME": g.get("IS_HOME", True), "RESULT": g.get("WL",""),
-                "MIN": mn, "PTS": pts, "REB": reb, "AST": ast,
-                "STL": stl, "BLK": blk, "TOV": tov,
-                "FGM": round(pts/2.2), "FGA": round(pts/1.1),
-                "FG3M": round(pts*0.15), "FG3A": round(pts*0.35),
-                "FTM": round(pts*0.2), "FTA": round(pts*0.25),
-                "OREB": round(reb*0.25), "DREB": round(reb*0.75),
-                "FPTS": round(fpts, 2),
-            })
-
-    df = pd.DataFrame(rows)
-    df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
-    return df.sort_values(["PLAYER_ID","GAME_DATE"]).reset_index(drop=True)
-
-
-async def update_player_logs() -> pd.DataFrame:
+def update_player_logs(season: str = SEASON) -> pd.DataFrame:
     out = DATA_DIR / "player_logs.parquet"
     if not out.exists():
-        return await fetch_all_players(SEASON_YEARS)
+        console.print("[yellow]No existing data — doing full pull[/yellow]")
+        return pull_all_players(season)
 
     existing = pd.read_parquet(out)
     existing["GAME_DATE"] = pd.to_datetime(existing["GAME_DATE"])
     last = existing["GAME_DATE"].max()
-    console.print(f"Existing through {last.date()}. Pulling new games...")
+    console.print(f"Existing data through [bold]{last.date()}[/bold] — pulling new games...")
 
-    new_df = await fetch_all_players([2026])
-    new_df["GAME_DATE"] = pd.to_datetime(new_df["GAME_DATE"])
-    new_rows = new_df[new_df["GAME_DATE"] > last]
-    if len(new_rows):
-        combined = pd.concat([existing, new_rows], ignore_index=True)
-        combined = combined.drop_duplicates(subset=["PLAYER_ID","GAME_ID"])
-        combined.to_parquet(out, index=False)
-        console.print(f"[green]+{len(new_rows)} new rows[/green]")
-        return combined
-    console.print("[dim]No new games.[/dim]")
-    return existing
+    frames = [existing]
+    for player_id, name, team in PLAYERS:
+        df = fetch_player_gamelog(player_id, name, season)
+        if len(df):
+            df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
+            new = df[df["GAME_DATE"] > last]
+            if len(new):
+                frames.append(new)
+                console.print(f"  [green]+{len(new)}[/green] {name}")
+        time.sleep(REQUEST_DELAY)
+
+    combined = pd.concat(frames, ignore_index=True)
+    combined = combined.drop_duplicates(subset=["PLAYER_ID", "GAME_ID"])
+    combined = combined.sort_values(["PLAYER_ID", "GAME_DATE"]).reset_index(drop=True)
+    combined.to_parquet(out, index=False)
+    console.print(f"[bold green]Updated → {len(combined):,} total rows[/bold green]")
+    return combined
 
 
-async def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--update", action="store_true")
-    args = parser.parse_args()
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
 
-    console.print("[bold orange1]HoopIQ Player Pipeline[/bold orange1]\n")
+def print_summary(df: pd.DataFrame) -> None:
+    console.print(f"\n[bold]Dataset Summary[/bold]")
+    console.print(f"  Players    : {df['PLAYER_NAME'].nunique()}")
+    console.print(f"  Total rows : {len(df):,}")
+    console.print(f"  Date range : {df['GAME_DATE'].min().date()} → {df['GAME_DATE'].max().date()}")
+    console.print(f"  Avg PTS    : {df['PTS'].mean():.1f}")
+    console.print(f"  Avg REB    : {df['REB'].mean():.1f}")
+    console.print(f"  Avg AST    : {df['AST'].mean():.1f}")
+    console.print(f"  Avg FPTS   : {df['FPTS'].mean():.1f}")
+    console.print(f"  Data fill  : {df[['PTS','REB','AST']].notna().mean().mean():.0%} ✓")
 
-    if args.update:
-        df = await update_player_logs()
-    else:
-        df = await fetch_all_players(SEASON_YEARS)
+    t = Table(title="Top 10 scorers this season", box=box.SIMPLE)
+    t.add_column("Player", style="cyan")
+    t.add_column("GP", justify="right")
+    t.add_column("PTS", justify="right")
+    t.add_column("REB", justify="right")
+    t.add_column("AST", justify="right")
+    t.add_column("FPTS", justify="right")
 
-    out = DATA_DIR / "player_logs.parquet"
-    df.to_parquet(out, index=False)
+    top = (df.groupby("PLAYER_NAME")
+           .agg(GP=("GAME_ID","nunique"), PTS=("PTS","mean"),
+                REB=("REB","mean"), AST=("AST","mean"), FPTS=("FPTS","mean"))
+           .sort_values("PTS", ascending=False).head(10).reset_index())
 
-    # Save player index
-    index = {name: int(pid) for pid,name,_ in TOP_PLAYERS}
-    (DATA_DIR / "player_index.json").write_text(json.dumps(index, indent=2))
+    for _, row in top.iterrows():
+        t.add_row(row["PLAYER_NAME"], str(int(row["GP"])),
+                  f"{row['PTS']:.1f}", f"{row['REB']:.1f}",
+                  f"{row['AST']:.1f}", f"{row['FPTS']:.1f}")
+    console.print(t)
 
-    console.print(f"\n[bold green]Saved {len(df):,} player-game rows → {out}[/bold green]")
-    console.print(f"Players: {df['PLAYER_NAME'].nunique()}")
-    console.print(f"Date range: {df['GAME_DATE'].min().date()} → {df['GAME_DATE'].max().date()}")
-    console.print(f"Avg PTS: {df['PTS'].mean():.1f} | Avg REB: {df['REB'].mean():.1f} | Avg AST: {df['AST'].mean():.1f}")
-    console.print("\n[bold green]Done! Run: python 7_player_model.py[/bold green]")
 
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description="HoopIQ Player Pipeline — NBA.com real stats")
+    parser.add_argument("--update", action="store_true", help="Append new games only")
+    parser.add_argument("--test",   action="store_true", help="Test with one player only")
+    parser.add_argument("--season", type=str, default=SEASON, help=f"Season string (default: {SEASON})")
+    args = parser.parse_args()
+
+    console.print("[bold #f59e0b]HoopIQ Player Pipeline[/bold #f59e0b]")
+    console.print(f"[dim]Source: stats.nba.com (official NBA stats, real data)[/dim]")
+    console.print(f"[dim]Season: {args.season} · {len(PLAYERS)} players[/dim]\n")
+
+    if args.test:
+        console.print("[yellow]Test mode — pulling Jayson Tatum only[/yellow]")
+        df = fetch_player_gamelog(1628384, "Jayson Tatum", args.season)
+        if len(df):
+            console.print(f"[green]✓ {len(df)} games pulled[/green]")
+            console.print(df[["GAME_DATE","MATCHUP","PTS","REB","AST","MIN","FPTS"]].tail(10).to_string())
+        else:
+            console.print("[red]No data returned — NBA.com may be blocking. Try with VPN.[/red]")
+        raise SystemExit(0)
+
+    if args.update:
+        df = update_player_logs(args.season)
+    else:
+        df = pull_all_players(args.season)
+        out = DATA_DIR / "player_logs.parquet"
+        df.to_parquet(out, index=False)
+        console.print(f"\n[bold green]Saved {len(df):,} real player-game rows → {out}[/bold green]")
+
+    # Save player index
+    index = {name: int(pid) for pid, name, _ in PLAYERS}
+    (DATA_DIR / "player_index.json").write_text(json.dumps(index, indent=2))
+
+    print_summary(df)
+    console.print("\n[bold green]Done! Run: python 7_player_model.py[/bold green]")
