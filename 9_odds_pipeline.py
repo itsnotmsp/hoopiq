@@ -48,7 +48,7 @@ SESSION.headers.update(HEADERS)
 # API helpers
 # ---------------------------------------------------------------------------
 
-def api_get(endpoint: str, params: dict = {}) -> dict | list:
+def api_get(endpoint: str, params: dict = {}) -> dict:
     url = f"{BASE}/{endpoint}"
     params["apiKey"] = API_KEY
     r = SESSION.get(url, params=params, timeout=15)
