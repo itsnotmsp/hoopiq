@@ -1,3 +1,4 @@
+import httpx
 """
 10 — Odds API endpoints (append to 5_api_server.py)
 -----------------------------------------------------

@@ -620,6 +620,129 @@ async def frontend():
 # Dev server
 # ---------------------------------------------------------------------------
 
+
+
+@app.get("/odds/games")
+async def odds_games():
+    """Real moneyline, spread and totals from DraftKings/FanDuel/BetMGM."""
+    try:
+        games = await fetch_odds_games()
+        return {"count": len(games), "games": games,
+                "updated": datetime.now(timezone.utc).isoformat()}
+    except Exception as e:
+        raise HTTPException(502, f"Odds API error: {e}")
+
+
+
+@app.get("/odds/props")
+async def odds_props():
+    """Real player prop lines for all tonight's games."""
+    try:
+        games = await fetch_odds_games()
+        all_props = []
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for g in games:
+                props = await fetch_odds_props_for_event(
+                    client, g["id"], g["home_team"], g["away_team"]
+                )
+                all_props.extend(props)
+        (Path("data") / "odds_props.json").write_text(json.dumps(all_props))
+        return {"count": len(all_props), "props": all_props,
+                "updated": datetime.now(timezone.utc).isoformat()}
+    except Exception as e:
+        raise HTTPException(502, f"Props API error: {e}")
+
+
+
+@app.get("/odds/edge")
+async def odds_edge():
+    """
+    Compare model win probability vs market implied probability.
+    Returns games where the model finds an edge over the market.
+    """
+    try:
+        games = await fetch_odds_games()
+    except Exception as e:
+        raise HTTPException(502, f"Odds fetch failed: {e}")
+
+    today = date.today().isoformat()
+    results = []
+
+    for g in games:
+        home_full = g["home_team"]
+        away_full = g["away_team"]
+        home_abbr = TEAM_NAME_TO_ABBR.get(home_full, home_full[:3].upper())
+        away_abbr = TEAM_NAME_TO_ABBR.get(away_full, away_full[:3].upper())
+
+        # Model prediction
+        if state.model and state.calibrated:
+            features = build_game_features(home_abbr, away_abbr, today)
+            if features is not None:
+                model_home_prob = float(state.calibrated.predict_proba(features)[0][1])
+            else:
+                model_home_prob = 0.585
+        else:
+            model_home_prob = 0.585
+
+        # Market implied probability from moneyline
+        ml = g.get("moneyline", {})
+        home_ml = ml.get("home")
+        away_ml = ml.get("away")
+        market_home_prob = None
+
+        if home_ml and away_ml:
+            def ml_to_prob(ml_price):
+                if ml_price > 0:
+                    return 100 / (ml_price + 100)
+                else:
+                    return abs(ml_price) / (abs(ml_price) + 100)
+
+            raw_home = ml_to_prob(home_ml)
+            raw_away = ml_to_prob(away_ml)
+            vig = raw_home + raw_away
+            market_home_prob = raw_home / vig  # remove vig
+
+        sp = g.get("spread", {})
+        ou = g.get("total", {})
+
+        result = {
+            "matchup":        f"{away_full} @ {home_full}",
+            "home_team":      home_full,
+            "away_team":      away_full,
+            "home_abbr":      home_abbr,
+            "away_abbr":      away_abbr,
+            "commence_time":  g["commence_time"],
+            "model_home_prob":   round(model_home_prob, 4),
+            "model_away_prob":   round(1 - model_home_prob, 4),
+            "market_home_prob":  round(market_home_prob, 4) if market_home_prob else None,
+            "market_away_prob":  round(1 - market_home_prob, 4) if market_home_prob else None,
+            "moneyline":      ml,
+            "spread":         sp,
+            "total":          ou,
+            "edge": None,
+        }
+
+        if market_home_prob:
+            edge = model_home_prob - market_home_prob
+            result["edge"] = {
+                "value":      round(edge, 4),
+                "direction":  "home" if edge > 0 else "away",
+                "pct":        f"{abs(edge)*100:.1f}%",
+                "rating":     "strong" if abs(edge) > 0.07 else
+                              "moderate" if abs(edge) > 0.04 else "small",
+                "bet_signal": abs(edge) > 0.04,
+            }
+
+        results.append(result)
+
+    results.sort(key=lambda x: abs(x["edge"]["value"]) if x["edge"] else 0, reverse=True)
+    return {
+        "date": today,
+        "count": len(results),
+        "games": results,
+        "updated": datetime.now(timezone.utc).isoformat(),
+    }
+
 if __name__ == "__main__":
     port = int(__import__("os").environ.get("PORT", 8000))
     uvicorn.run("5_api_server:app", host="0.0.0.0", port=port, reload=False, log_level="info")
