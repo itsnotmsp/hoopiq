@@ -1,35 +1,9 @@
-"""
-Step 5 — FastAPI Prediction Server
--------------------------------------
-Production-ready REST API for NBA game winner predictions.
-Loads trained XGBoost model, pulls live data, returns predictions.
-
-Endpoints:
-  GET  /health                     — liveness check
-  GET  /games/today                — today's games with live scores
-  POST /predict/game               — predict winner for a matchup
-  POST /predict/batch              — predict all games for a date
-  GET  /predict/live               — live game predictions + current score
-  GET  /model/info                 — model metadata & accuracy
-
-Usage:
-    pip install -r requirements.txt
-    python 5_api_server.py
-
-    # With auto-reload for development:
-    uvicorn 5_api_server:app --reload --port 8000
-
-Test:
-    curl http://localhost:8000/games/today
-    curl -X POST http://localhost:8000/predict/game \
-         -H "Content-Type: application/json" \
-         -d '{"home_team": "BOS", "away_team": "MIL"}'
-"""
-
+"""HoopIQ FastAPI Server with all endpoints."""
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone, date
+import os
+from datetime import datetime, timezone, date, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -39,23 +13,13 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 import uvicorn
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(message)s",
-    datefmt="%H:%M:%S",
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("hoopiq")
 
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
 MODEL_DIR  = Path("models")
 DATA_DIR   = Path("data")
 MODEL_PATH = MODEL_DIR / "xgb_model.json"
@@ -63,84 +27,207 @@ CALIB_PATH = MODEL_DIR / "calibrator.joblib"
 FEAT_LIST  = MODEL_DIR / "feature_list.json"
 EVAL_PATH  = MODEL_DIR / "eval_report.json"
 
-# ---------------------------------------------------------------------------
-# ESPN API
-# ---------------------------------------------------------------------------
 ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 ESPN_SUMMARY    = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary"
 HTTP_HEADERS    = {"User-Agent": "HoopIQ/1.0", "Accept": "application/json"}
 
-# ---------------------------------------------------------------------------
-# App
-# ---------------------------------------------------------------------------
-app = FastAPI(
-    title="HoopIQ Prediction API",
-    description="AI-powered NBA game predictions backed by XGBoost + live data.",
-    version="1.0.0",
-)
-
+app = FastAPI(title="HoopIQ API", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_origin_regex=".*",
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"],
+    allow_origins=["*"], allow_origin_regex=".*",
+    allow_credentials=False, allow_methods=["*"],
+    allow_headers=["*"], expose_headers=["*"],
 )
 
-# ---------------------------------------------------------------------------
-# Global model state
-# ---------------------------------------------------------------------------
+
 class ModelState:
-    model: Optional[xgb.XGBClassifier] = None
+    model = None
     calibrated = None
-    feature_cols: list[str] = []
+    feature_cols: list = []
     eval_report: dict = {}
-    game_log_cache: Optional[pd.DataFrame] = None
-    last_cache_date: Optional[date] = None
+    game_log_cache = None
+    prop_models: dict = {}
+    prop_feat_cols: list = []
+    prop_eval: list = []
+    player_log_cache = None
+    player_index: dict = {}
 
 state = ModelState()
 
 
-# ---------------------------------------------------------------------------
-# Startup: load model + feature data
-# ---------------------------------------------------------------------------
-
 @app.on_event("startup")
-async def load_model():
+async def load_models():
     if MODEL_PATH.exists():
         state.model = xgb.XGBClassifier()
         state.model.load_model(str(MODEL_PATH))
         state.calibrated = joblib.load(CALIB_PATH)
         state.feature_cols = json.loads(FEAT_LIST.read_text())
         state.eval_report = json.loads(EVAL_PATH.read_text()) if EVAL_PATH.exists() else {}
-        log.info(f"Model loaded — {len(state.feature_cols)} features")
-    else:
-        log.warning("No trained model found at models/xgb_model.json. Run 4_train_model.py first.")
+        log.info(f"Game model loaded — {len(state.feature_cols)} features")
 
     if (DATA_DIR / "game_logs.parquet").exists():
         df = pd.read_parquet(DATA_DIR / "game_logs.parquet")
         df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
         state.game_log_cache = df
-        log.info(f"Game log cache loaded — {len(df):,} rows")
+        log.info(f"Game log cache — {len(df):,} rows")
+
+    for target in ["PTS","REB","AST","FPTS"]:
+        path = MODEL_DIR / f"prop_{target.lower()}.json"
+        if path.exists():
+            m = xgb.XGBRegressor()
+            m.load_model(str(path))
+            state.prop_models[target] = m
+            log.info(f"Prop model loaded: {target}")
+
+    p = MODEL_DIR / "prop_feature_list.json"
+    if p.exists(): state.prop_feat_cols = json.loads(p.read_text())
+    p = MODEL_DIR / "prop_eval.json"
+    if p.exists(): state.prop_eval = json.loads(p.read_text())
+
+    if (DATA_DIR / "player_logs.parquet").exists():
+        df = pd.read_parquet(DATA_DIR / "player_logs.parquet")
+        df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
+        state.player_log_cache = df
+        log.info(f"Player log cache — {len(df):,} rows")
+
+    if (DATA_DIR / "player_index.json").exists():
+        state.player_index = json.loads((DATA_DIR / "player_index.json").read_text())
 
 
-# ---------------------------------------------------------------------------
-# Pydantic schemas
-# ---------------------------------------------------------------------------
+# ─── ESPN Helper ───
+async def get_espn_games(game_date=None):
+    params = {}
+    if game_date: params["dates"] = game_date.replace("-","")
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        r = await client.get(ESPN_SCOREBOARD, params=params, headers=HTTP_HEADERS)
+        r.raise_for_status()
+    games = []
+    for ev in r.json().get("events",[]):
+        comp = ev.get("competitions",[{}])[0]
+        comps = comp.get("competitors",[])
+        home = next((c for c in comps if c.get("homeAway")=="home"),{})
+        away = next((c for c in comps if c.get("homeAway")=="away"),{})
+        status = comp.get("status",{}).get("type",{})
+        odds_list = comp.get("odds",[])
+        odds = odds_list[0] if odds_list else {}
+        games.append({
+            "game_id": ev.get("id"),
+            "home_abbr": home.get("team",{}).get("abbreviation",""),
+            "away_abbr": away.get("team",{}).get("abbreviation",""),
+            "home_score": int(home.get("score",0) or 0),
+            "away_score": int(away.get("score",0) or 0),
+            "home_record": home.get("records",[{}])[0].get("summary","") if home.get("records") else "",
+            "away_record": away.get("records",[{}])[0].get("summary","") if away.get("records") else "",
+            "status": status.get("state","pre"),
+            "status_desc": status.get("description",""),
+            "period": comp.get("status",{}).get("period",0),
+            "clock": comp.get("status",{}).get("displayClock",""),
+            "spread": odds.get("details",""),
+            "over_under": odds.get("overUnder"),
+            "venue": comp.get("venue",{}).get("fullName",""),
+            "date": ev.get("date",""),
+        })
+    return games
 
+
+# ─── Feature builders ───
+def build_game_features(home, away, game_date):
+    if state.game_log_cache is None: return None
+    df = state.game_log_cache
+    cutoff = pd.Timestamp(game_date)
+    def team_feats(abbr):
+        t = df[df["TEAM_ABBREVIATION"]==abbr]
+        past = t[t["GAME_DATE"]<cutoff].sort_values("GAME_DATE")
+        if len(past)<3: return {}
+        l5=past.tail(5); l10=past.tail(10); feat={}
+        for c in ["PTS","FGM","FGA","FG_PCT","FG3M","FG3A","FG3_PCT","FTM","FTA","FT_PCT","OREB","DREB","REB","AST","STL","BLK","TOV","PF","PLUS_MINUS"]:
+            if c in past.columns:
+                feat[f"ROLL5_{c}"]=l5[c].mean()
+                feat[f"ROLL10_{c}"]=l10[c].mean()
+        feat["REST_DAYS"]=min((cutoff-past["GAME_DATE"].iloc[-1]).days,10)
+        hm=past[past.get("IS_HOME",pd.Series(True,index=past.index))==True].tail(10)
+        aw=past[past.get("IS_HOME",pd.Series(False,index=past.index))==False].tail(10)
+        feat["HOME_WIN_RATE"]=(hm["WL"]=="W").mean() if len(hm)>=3 else 0.5
+        feat["AWAY_WIN_RATE"]=(aw["WL"]=="W").mean() if len(aw)>=3 else 0.5
+        feat["HOME_AVG_PTS"]=hm["PTS"].mean() if len(hm)>=3 else past["PTS"].mean()
+        feat["AWAY_AVG_PTS"]=aw["PTS"].mean() if len(aw)>=3 else past["PTS"].mean()
+        feat["FORM_WIN_RATE"]=(l10["WL"]=="W").mean() if len(l10)>=3 else 0.5
+        feat["FORM_NET_RTG"]=l10["PLUS_MINUS"].mean() if len(l10)>=3 else 0.0
+        return feat
+    h=team_feats(home); a=team_feats(away)
+    if not h or not a: return None
+    row={}
+    for c,v in h.items(): row[f"H_{c}"]=v
+    for c,v in a.items(): row[f"A_{c}"]=v
+    for c in h:
+        if f"H_{c}" in row and f"A_{c}" in row:
+            row[f"DIFF_{c}"]=row[f"H_{c}"]-row[f"A_{c}"]
+    vec=np.array([row.get(f,0.0) for f in state.feature_cols],dtype=np.float32)
+    return vec.reshape(1,-1)
+
+
+def build_player_features(player_name, opp_team, is_home, game_date):
+    if state.player_log_cache is None or not state.prop_feat_cols: return None
+    df = state.player_log_cache
+    cutoff = pd.Timestamp(game_date)
+    p_df = df[df["PLAYER_NAME"].str.lower() == player_name.lower()]
+    if len(p_df)==0: p_df = df[df["PLAYER_NAME"].str.lower().str.contains(player_name.lower())]
+    if len(p_df)==0: return None
+    past = p_df[p_df["GAME_DATE"]<cutoff].sort_values("GAME_DATE")
+    if len(past)<3: return None
+    row = {}
+    for c in ["PTS","REB","AST","STL","BLK","TOV","MIN","FGM","FGA","FG3M","FPTS"]:
+        if c not in past.columns: continue
+        for w in [3,5,10]: row[f"ROLL{w}_{c}"] = past[c].tail(w).mean()
+        row[f"STD5_{c}"] = past[c].tail(5).std() if len(past)>=5 else 0.0
+    row["REST_DAYS"] = min((cutoff - past["GAME_DATE"].iloc[-1]).days, 10)
+    row["IS_HOME"] = int(is_home)
+    row["GAME_NUM"] = len(past) + 1
+    row["FORM_WIN_RATE"] = (past["RESULT"].tail(5) == "W").mean() if "RESULT" in past.columns else 0.5
+    if "FGM" in past.columns and "FGA" in past.columns:
+        fga = past["FGA"].tail(5).mean()
+        row["ROLL5_FG_PCT"] = (past["FGM"].tail(5).mean() / fga) if fga > 0 else 0.45
+    if state.game_log_cache is not None:
+        opp_past = state.game_log_cache[(state.game_log_cache["TEAM_ABBREVIATION"]==opp_team)&(state.game_log_cache["GAME_DATE"]<cutoff)].tail(5)
+        row["OPP_PTS_ALLOWED"] = opp_past["PTS"].mean() if len(opp_past)>=3 else 110.0
+    vec = np.array([row.get(f, 0.0) for f in state.prop_feat_cols], dtype=np.float32)
+    return vec.reshape(1,-1)
+
+
+def confidence_label(prob):
+    if prob>=0.70: return "HIGH"
+    elif prob>=0.58: return "MEDIUM"
+    return "LOW"
+
+
+def grade_start_sit(proj_fpts, avg_fpts):
+    diff = proj_fpts - avg_fpts
+    pct = diff / max(avg_fpts, 1.0)
+    if pct >= 0.15: return {"grade":"A","recommendation":"START","reason":f"Projected {proj_fpts:.1f} FPTS (+{diff:.1f} vs avg)"}
+    elif pct >= 0.05: return {"grade":"B","recommendation":"START","reason":f"Projected {proj_fpts:.1f} FPTS, slight edge"}
+    elif pct >= -0.10: return {"grade":"C","recommendation":"FLEX","reason":f"Projected {proj_fpts:.1f} FPTS, near average"}
+    else: return {"grade":"D","recommendation":"SIT","reason":f"Projected {proj_fpts:.1f} FPTS ({diff:.1f} vs avg)"}
+
+
+# ─── Schemas ───
 class GamePredictRequest(BaseModel):
-    home_team: str = Field(..., example="BOS", description="3-letter team abbreviation")
-    away_team: str = Field(..., example="MIL")
-    date: Optional[str]  = Field(None, example="2024-04-18", description="ISO date, defaults to today")
-    spread: Optional[float] = Field(None, description="Vegas spread (home perspective, e.g. -5.5)")
-    over_under: Optional[float] = Field(None, description="Over/under total")
-
+    home_team: str
+    away_team: str
+    date: Optional[str] = None
+    spread: Optional[float] = None
+    over_under: Optional[float] = None
 
 class BatchPredictRequest(BaseModel):
-    date: Optional[str] = Field(None, description="ISO date YYYY-MM-DD, defaults to today")
+    date: Optional[str] = None
 
+class PropRequest(BaseModel):
+    player_name: str
+    opp_team: str
+    is_home: bool = True
+    date: Optional[str] = None
+    pts_line: Optional[float] = None
+    reb_line: Optional[float] = None
+    ast_line: Optional[float] = None
 
 class PredictionResult(BaseModel):
     home_team: str
@@ -148,537 +235,321 @@ class PredictionResult(BaseModel):
     home_win_prob: float
     away_win_prob: float
     predicted_winner: str
-    confidence: str          # HIGH / MEDIUM / LOW
-    model_version: str = "xgb_v1"
+    confidence: str
+    model_version: str = "xgb_v2"
 
 
-# ---------------------------------------------------------------------------
-# Feature builder for inference
-# ---------------------------------------------------------------------------
-
-def build_inference_features(home: str, away: str, game_date: str) -> Optional[np.ndarray]:
-    """
-    Build the same features the model was trained on, but for a single matchup.
-    Pulls rolling stats from the cached game log.
-    Returns None if insufficient data.
-    """
-    if state.game_log_cache is None:
-        return None
-
-    df = state.game_log_cache
-    cutoff = pd.Timestamp(game_date)
-
-    def team_features(abbr: str, is_home: bool) -> dict:
-        team_df = df[df["TEAM_ABBREVIATION"] == abbr]
-        past = team_df[team_df["GAME_DATE"] < cutoff].sort_values("GAME_DATE")
-
-        if len(past) < 3:
-            return {}
-
-        last5  = past.tail(5)
-        last10 = past.tail(10)
-
-        feat = {}
-        stat_cols = ["PTS","FGM","FGA","FG_PCT","FG3M","FG3A","FG3_PCT",
-                     "FTM","FTA","FT_PCT","OREB","DREB","REB","AST","STL","BLK","TOV","PF","PLUS_MINUS"]
-
-        for col in stat_cols:
-            if col in past.columns:
-                feat[f"ROLL5_{col}"]  = last5[col].mean()
-                feat[f"ROLL10_{col}"] = last10[col].mean()
-
-        # Rest days
-        last_game = past["GAME_DATE"].iloc[-1]
-        feat["REST_DAYS"] = min((cutoff - last_game).days, 10)
-
-        # Home/away splits
-        home_df = past[past.get("IS_HOME", pd.Series(True, index=past.index)) == True].tail(10)
-        away_df = past[past.get("IS_HOME", pd.Series(False, index=past.index)) == False].tail(10)
-        feat["HOME_WIN_RATE"] = (home_df["WL"] == "W").mean() if len(home_df) >= 3 else 0.5
-        feat["AWAY_WIN_RATE"] = (away_df["WL"] == "W").mean() if len(away_df) >= 3 else 0.5
-        feat["HOME_AVG_PTS"]  = home_df["PTS"].mean() if len(home_df) >= 3 else past["PTS"].mean()
-        feat["AWAY_AVG_PTS"]  = away_df["PTS"].mean() if len(away_df) >= 3 else past["PTS"].mean()
-
-        # Season form
-        feat["FORM_WIN_RATE"] = (last10["WL"] == "W").mean() if len(last10) >= 3 else 0.5
-        feat["FORM_NET_RTG"]  = last10["PLUS_MINUS"].mean() if len(last10) >= 3 else 0.0
-
-        return feat
-
-    def h2h_features(team: str, opp: str) -> dict:
-        team_df = df[(df["TEAM_ABBREVIATION"] == team) & (df["OPP_ABBR"] == opp)]
-        past_h2h = team_df[team_df["GAME_DATE"] < cutoff].tail(10)
-        if len(past_h2h) < 2:
-            return {"H2H_WIN_RATE": 0.5, "H2H_AVG_MARGIN": 0.0}
-        return {
-            "H2H_WIN_RATE": (past_h2h["WL"] == "W").mean(),
-            "H2H_AVG_MARGIN": past_h2h["PLUS_MINUS"].mean(),
-        }
-
-    h_raw = team_features(home, True)
-    a_raw = team_features(away, False)
-    h2h   = h2h_features(home, away)
-
-    if not h_raw or not a_raw:
-        return None
-
-    row = {}
-    for col, val in h_raw.items():
-        row[f"H_{col}"] = val
-    for col, val in a_raw.items():
-        row[f"A_{col}"] = val
-    for col, val in h2h.items():
-        row[f"H_{col}"] = val
-
-    # Diff features
-    for col in h_raw:
-        h_key = f"H_{col}"
-        a_key = f"A_{col}"
-        if h_key in row and a_key in row:
-            row[f"DIFF_{col}"] = row[h_key] - row[a_key]
-
-    # Align to model feature list, fill missing with 0
-    vec = np.array([row.get(f, 0.0) for f in state.feature_cols], dtype=np.float32)
-    return vec.reshape(1, -1)
-
-
-def confidence_label(prob: float) -> str:
-    if prob >= 0.70:
-        return "HIGH"
-    elif prob >= 0.58:
-        return "MEDIUM"
-    return "LOW"
-
-
-# ---------------------------------------------------------------------------
-# ESPN helpers (async)
-# ---------------------------------------------------------------------------
-
-async def get_espn_games(game_date: Optional[str] = None) -> list[dict]:
-    params = {}
-    if game_date:
-        params["dates"] = game_date.replace("-", "")
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(ESPN_SCOREBOARD, params=params, headers=HTTP_HEADERS)
-        r.raise_for_status()
-    events = r.json().get("events", [])
-    games = []
-    for ev in events:
-        comp = ev.get("competitions", [{}])[0]
-        comps = comp.get("competitors", [])
-        home = next((c for c in comps if c.get("homeAway") == "home"), {})
-        away = next((c for c in comps if c.get("homeAway") == "away"), {})
-        status = comp.get("status", {}).get("type", {})
-        odds_list = comp.get("odds", [])
-        odds = odds_list[0] if odds_list else {}
-        games.append({
-            "game_id":    ev.get("id"),
-            "home_abbr":  home.get("team", {}).get("abbreviation", ""),
-            "away_abbr":  away.get("team", {}).get("abbreviation", ""),
-            "home_score": int(home.get("score", 0)),
-            "away_score": int(away.get("score", 0)),
-            "home_record": home.get("records", [{}])[0].get("summary", "") if home.get("records") else "",
-            "away_record": away.get("records", [{}])[0].get("summary", "") if away.get("records") else "",
-            "status":      status.get("state", "pre"),
-            "status_desc": status.get("description", ""),
-            "period":      comp.get("status", {}).get("period", 0),
-            "clock":       comp.get("status", {}).get("displayClock", ""),
-            "spread":      odds.get("details", ""),
-            "over_under":  odds.get("overUnder"),
-            "venue":       comp.get("venue", {}).get("fullName", ""),
-            "date":        ev.get("date", ""),
-        })
-    return games
-
-
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
+# ─── Routes ───
 @app.get("/health")
 async def health():
     return {
         "status": "ok",
         "model_loaded": state.model is not None,
+        "prop_models": list(state.prop_models.keys()),
         "cache_rows": len(state.game_log_cache) if state.game_log_cache is not None else 0,
+        "player_rows": len(state.player_log_cache) if state.player_log_cache is not None else 0,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
 @app.get("/model/info")
 async def model_info():
-    if not state.eval_report:
-        raise HTTPException(503, "Model not loaded")
     return {
         "n_features": len(state.feature_cols),
-        "evaluation": state.eval_report.get("holdout", {}),
-        "cv": state.eval_report.get("cv", {}).get("summary", {}),
-        "params": state.eval_report.get("params", {}),
+        "evaluation": state.eval_report.get("holdout",{}),
+        "cv": state.eval_report.get("cv",{}).get("summary",{}),
+        "prop_models": {e["target"]: {"mae": e["mae"], "r2": e["r2"]} for e in state.prop_eval} if state.prop_eval else {},
     }
 
 
 @app.get("/games/today")
 async def games_today():
-    """Return today's NBA games using Eastern Time (NBA schedule timezone)."""
     try:
-        from datetime import timezone, timedelta
-        # NBA games are scheduled in Eastern Time
-        et = timezone(timedelta(hours=-5))  # EST (use -4 in summer for EDT)
+        et = timezone(timedelta(hours=-5))
         today_et = datetime.now(timezone.utc).astimezone(et).date()
         date_str = today_et.strftime("%Y%m%d")
         games = await get_espn_games(date_str)
-        return {
-            "date": today_et.isoformat(),
-            "timezone": "America/New_York",
-            "games": games,
-            "count": len(games)
-        }
+        return {"date": today_et.isoformat(), "timezone": "America/New_York", "games": games, "count": len(games)}
     except Exception as e:
-        raise HTTPException(502, f"ESPN API error: {e}")
+        raise HTTPException(502, f"ESPN error: {e}")
 
 
 @app.post("/predict/game", response_model=PredictionResult)
 async def predict_game(req: GamePredictRequest):
-    if state.model is None:
-        raise HTTPException(503, "Model not loaded. Run 4_train_model.py first.")
-
+    if state.model is None: raise HTTPException(503, "Model not loaded")
     game_date = req.date or date.today().isoformat()
-    home = req.home_team.upper()
-    away = req.away_team.upper()
-
-    features = build_inference_features(home, away, game_date)
-
-    if features is None:
-        # Fall back to a league-average home-court advantage estimate
-        log.warning(f"Insufficient history for {away}@{home} — using home court prior")
-        home_prob = 0.585
-    else:
-        probs = state.calibrated.predict_proba(features)[0]
-        home_prob = float(probs[1])
-
+    home, away = req.home_team.upper(), req.away_team.upper()
+    features = build_game_features(home, away, game_date)
+    home_prob = float(state.calibrated.predict_proba(features)[0][1]) if features is not None else 0.585
     away_prob = 1.0 - home_prob
-    winner = home if home_prob >= 0.5 else away
-
     return PredictionResult(
-        home_team=home,
-        away_team=away,
-        home_win_prob=round(home_prob, 4),
-        away_win_prob=round(away_prob, 4),
-        predicted_winner=winner,
+        home_team=home, away_team=away,
+        home_win_prob=round(home_prob,4), away_win_prob=round(away_prob,4),
+        predicted_winner=home if home_prob>=0.5 else away,
         confidence=confidence_label(max(home_prob, away_prob)),
     )
 
 
 @app.post("/predict/batch")
 async def predict_batch(req: BatchPredictRequest):
-    if state.model is None:
-        raise HTTPException(503, "Model not loaded.")
-
-    game_date = req.date or date.today().isoformat()
-
-    try:
-        games = await get_espn_games(game_date)
-    except Exception as e:
-        raise HTTPException(502, f"ESPN fetch failed: {e}")
-
+    if state.model is None: raise HTTPException(503, "Model not loaded")
+    et = timezone(timedelta(hours=-5))
+    today_et = datetime.now(timezone.utc).astimezone(et).date()
+    game_date = req.date or today_et.isoformat()
+    try: games = await get_espn_games(game_date)
+    except Exception as e: raise HTTPException(502, str(e))
     results = []
     for g in games:
-        features = build_inference_features(g["home_abbr"], g["away_abbr"], game_date)
-        if features is None:
-            home_prob = 0.585
-        else:
-            probs = state.calibrated.predict_proba(features)[0]
-            home_prob = float(probs[1])
-
+        features = build_game_features(g["home_abbr"], g["away_abbr"], game_date)
+        home_prob = float(state.calibrated.predict_proba(features)[0][1]) if features is not None else 0.585
         away_prob = 1.0 - home_prob
-        winner = g["home_abbr"] if home_prob >= 0.5 else g["away_abbr"]
-
+        winner = g["home_abbr"] if home_prob>=0.5 else g["away_abbr"]
         results.append({
-            "game_id": g["game_id"],
-            "matchup": f"{g['away_abbr']} @ {g['home_abbr']}",
-            "home_team": g["home_abbr"],
-            "away_team": g["away_abbr"],
-            "home_win_prob": round(home_prob, 4),
-            "away_win_prob": round(away_prob, 4),
-            "predicted_winner": winner,
-            "confidence": confidence_label(max(home_prob, away_prob)),
-            "spread": g["spread"],
-            "over_under": g["over_under"],
-            "status": g["status"],
+            "game_id": g["game_id"], "matchup": f"{g['away_abbr']} @ {g['home_abbr']}",
+            "home_team": g["home_abbr"], "away_team": g["away_abbr"],
+            "home_win_prob": round(home_prob,4), "away_win_prob": round(away_prob,4),
+            "predicted_winner": winner, "confidence": confidence_label(max(home_prob, away_prob)),
+            "spread": g["spread"], "over_under": g["over_under"], "status": g["status"],
         })
-
-    return {
-        "date": game_date,
-        "predictions": results,
-        "model_accuracy_season": state.eval_report.get("holdout", {}).get("accuracy"),
-    }
+    return {"date": game_date, "predictions": results, "model_accuracy_season": state.eval_report.get("holdout",{}).get("accuracy")}
 
 
 @app.get("/predict/live")
 async def predict_live():
-    """Return predictions for all currently in-progress games."""
-    if state.model is None:
-        raise HTTPException(503, "Model not loaded.")
-
+    if state.model is None: raise HTTPException(503, "Model not loaded")
     games = await get_espn_games()
-    live = [g for g in games if g["status"] == "in"]
-
-    if not live:
-        return {"message": "No live games right now.", "games": []}
-
+    live = [g for g in games if g["status"]=="in"]
+    if not live: return {"message": "No live games.", "games": []}
     today = date.today().isoformat()
     results = []
     for g in live:
-        features = build_inference_features(g["home_abbr"], g["away_abbr"], today)
+        features = build_game_features(g["home_abbr"], g["away_abbr"], today)
         home_prob = float(state.calibrated.predict_proba(features)[0][1]) if features is not None else 0.585
-
         score_diff = g["home_score"] - g["away_score"]
-        score_adjustment = np.tanh(score_diff / 12.0) * 0.10
-        adjusted_prob = float(np.clip(home_prob + score_adjustment, 0.05, 0.95))
-
+        adjusted = float(np.clip(home_prob + np.tanh(score_diff/12.0)*0.10, 0.05, 0.95))
         results.append({
-            "game_id": g["game_id"],
-            "matchup": f"{g['away_abbr']} @ {g['home_abbr']}",
+            "game_id": g["game_id"], "matchup": f"{g['away_abbr']} @ {g['home_abbr']}",
             "score": f"{g['away_score']} - {g['home_score']}",
-            "period": g["period"],
-            "clock": g["clock"],
-            "pre_game_home_prob": round(home_prob, 4),
-            "live_home_prob": round(adjusted_prob, 4),
-            "predicted_winner": g["home_abbr"] if adjusted_prob >= 0.5 else g["away_abbr"],
-            "confidence": confidence_label(max(adjusted_prob, 1.0 - adjusted_prob)),
+            "period": g["period"], "clock": g["clock"],
+            "pre_game_home_prob": round(home_prob,4), "live_home_prob": round(adjusted,4),
+            "predicted_winner": g["home_abbr"] if adjusted>=0.5 else g["away_abbr"],
+            "confidence": confidence_label(max(adjusted, 1.0-adjusted)),
         })
-
     return {"live_games": len(results), "predictions": results}
 
 
-# ---------------------------------------------------------------------------
-# Dev server
-# ---------------------------------------------------------------------------
+@app.post("/props/player")
+async def predict_player_props(req: PropRequest):
+    if not state.prop_models: raise HTTPException(503, "Prop models not loaded")
+    game_date = req.date or date.today().isoformat()
+    features = build_player_features(req.player_name, req.opp_team, req.is_home, game_date)
+    if features is None: raise HTTPException(404, f"Player not found or insufficient history")
+    projections = {t: round(max(0, float(m.predict(features)[0])), 1) for t,m in state.prop_models.items()}
+    lines = {"PTS": req.pts_line, "REB": req.reb_line, "AST": req.ast_line}
+    prop_picks = {}
+    for stat, line in lines.items():
+        if line and stat in projections:
+            proj = projections[stat]; edge = proj - line
+            prop_picks[stat] = {
+                "line": line, "projection": proj,
+                "pick": "OVER" if edge>0 else "UNDER",
+                "edge": round(edge,1),
+                "confidence": min(95, max(50, 50 + abs(edge)*5)),
+            }
+    avg_fpts = None
+    if state.player_log_cache is not None:
+        df = state.player_log_cache
+        p_df = df[df["PLAYER_NAME"].str.lower().str.contains(req.player_name.lower())]
+        if len(p_df)>=5: avg_fpts = float(p_df["FPTS"].tail(10).mean())
+    proj_fpts = projections.get("FPTS", 0)
+    start_sit = grade_start_sit(proj_fpts, avg_fpts or proj_fpts*0.95)
+    return {
+        "player": req.player_name, "opponent": req.opp_team, "is_home": req.is_home, "date": game_date,
+        "projections": projections, "prop_picks": prop_picks,
+        "fantasy": {"projected_fpts": proj_fpts, "avg_fpts_last10": round(avg_fpts,1) if avg_fpts else None,
+                    "scoring": "DraftKings (PTS×1 + REB×1.25 + AST×1.5 + STL×2 + BLK×2 - TOV×0.5)"},
+        "start_sit": start_sit,
+    }
 
 
-# -----------------------------------------------------------------------
-# Routes — Real Odds (The Odds API)
-# -----------------------------------------------------------------------
-
-@app.get("/odds/games")
-async def odds_games():
-    """Real game odds (moneyline, spread, totals) from DraftKings/FanDuel/BetMGM."""
-    try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("odds_mod", "10_odds_integration.py")
-        odds_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(odds_mod)
-        games = await odds_mod.fetch_game_odds()
-        return {"games": games, "count": len(games), "usage": odds_mod.get_usage()}
-    except FileNotFoundError:
-        raise HTTPException(503, "Odds module not found. Add 10_odds_integration.py")
-    except ValueError as e:
-        raise HTTPException(503, str(e))
-    except Exception as e:
-        raise HTTPException(502, f"Odds API error: {e}")
-
-
-@app.get("/odds/live")
-async def odds_live():
-    """Live in-game odds (auto-refreshed every 60 seconds)."""
-    try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("odds_mod", "10_odds_integration.py")
-        odds_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(odds_mod)
-        games = await odds_mod.fetch_live_odds()
-        return {"live_games": games, "count": len(games), "usage": odds_mod.get_usage()}
-    except FileNotFoundError:
-        raise HTTPException(503, "Odds module not found")
-    except ValueError as e:
-        raise HTTPException(503, str(e))
-    except Exception as e:
-        raise HTTPException(502, f"Live odds error: {e}")
-
-
-@app.get("/odds/player_props/{game_id}")
-async def odds_player_props(game_id: str):
-    """Player prop lines (PTS/REB/AST) for a specific game."""
-    try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("odds_mod", "10_odds_integration.py")
-        odds_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(odds_mod)
-        props = await odds_mod.fetch_player_props(game_id)
-        return {**props, "usage": odds_mod.get_usage()}
-    except FileNotFoundError:
-        raise HTTPException(503, "Odds module not found")
-    except Exception as e:
-        raise HTTPException(502, f"Props error: {e}")
-
-
-@app.get("/odds/usage")
-async def odds_usage():
-    """Check remaining Odds API requests."""
-    try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("odds_mod", "10_odds_integration.py")
-        odds_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(odds_mod)
-        return odds_mod.get_usage()
-    except Exception as e:
-        return {"error": str(e)}
+@app.get("/props/fantasy")
+async def fantasy_lineup(date_str: Optional[str] = None):
+    if not state.prop_models or state.player_log_cache is None: raise HTTPException(503, "Models not loaded")
+    et = timezone(timedelta(hours=-5))
+    today_et = datetime.now(timezone.utc).astimezone(et).date()
+    game_date = date_str or today_et.isoformat()
+    try: games = await get_espn_games(game_date.replace("-",""))
+    except Exception as e: raise HTTPException(502, str(e))
+    active = set(); team_to_opp = {}; team_home = {}
+    for g in games:
+        active.add(g["home_abbr"]); active.add(g["away_abbr"])
+        team_to_opp[g["home_abbr"]] = g["away_abbr"]; team_to_opp[g["away_abbr"]] = g["home_abbr"]
+        team_home[g["home_abbr"]] = True; team_home[g["away_abbr"]] = False
+    if not active: return {"message": "No games today.", "players": []}
+    df = state.player_log_cache
+    players = df[df["PLAYER_TEAM"].isin(active)]["PLAYER_NAME"].unique()
+    results = []
+    for name in players:
+        p_df = df[df["PLAYER_NAME"]==name]
+        if len(p_df)<5: continue
+        team = p_df["PLAYER_TEAM"].iloc[-1]
+        opp = team_to_opp.get(team,""); is_home = team_home.get(team, True)
+        features = build_player_features(name, opp, is_home, game_date)
+        if features is None: continue
+        proj_fpts = float(state.prop_models["FPTS"].predict(features)[0]) if "FPTS" in state.prop_models else 0
+        proj_pts = float(state.prop_models["PTS"].predict(features)[0]) if "PTS" in state.prop_models else 0
+        proj_reb = float(state.prop_models["REB"].predict(features)[0]) if "REB" in state.prop_models else 0
+        proj_ast = float(state.prop_models["AST"].predict(features)[0]) if "AST" in state.prop_models else 0
+        avg_fpts = float(p_df["FPTS"].tail(10).mean())
+        ss = grade_start_sit(proj_fpts, avg_fpts)
+        results.append({
+            "player": name, "team": team, "opponent": opp, "home": is_home,
+            "proj_pts": round(max(0,proj_pts),1), "proj_reb": round(max(0,proj_reb),1),
+            "proj_ast": round(max(0,proj_ast),1), "proj_fpts": round(max(0,proj_fpts),1),
+            "avg_fpts_last10": round(avg_fpts,1),
+            "grade": ss["grade"], "recommendation": ss["recommendation"],
+        })
+    results.sort(key=lambda x: x["proj_fpts"], reverse=True)
+    return {"date": game_date, "games": len(games), "players": results,
+            "top_plays": [r for r in results if r["grade"]=="A"][:10]}
 
 
 @app.get("/props/top10")
 async def top_picks(date_str: Optional[str] = None):
-    """Return the top 10 highest-confidence prop picks for tonight."""
-    if not state.prop_models or state.player_log_cache is None:
-        raise HTTPException(503, "Prop models not loaded.")
-
-    game_date = date_str or date.today().isoformat()
-
-    try:
-        games = await get_espn_games(game_date)
-    except Exception as e:
-        raise HTTPException(502, str(e))
-
-    if not games:
-        return {"message": "No games today.", "picks": []}
-
-    active_teams = set()
-    team_to_opp = {}
-    team_home = {}
+    if not state.prop_models or state.player_log_cache is None: raise HTTPException(503, "Models not loaded")
+    et = timezone(timedelta(hours=-5))
+    today_et = datetime.now(timezone.utc).astimezone(et).date()
+    game_date = date_str or today_et.isoformat()
+    try: games = await get_espn_games(game_date.replace("-",""))
+    except Exception as e: raise HTTPException(502, str(e))
+    if not games: return {"message": "No games today.", "picks": []}
+    active = set(); team_to_opp = {}; team_home = {}
     for g in games:
-        active_teams.add(g["home_abbr"])
-        active_teams.add(g["away_abbr"])
-        team_to_opp[g["home_abbr"]] = g["away_abbr"]
-        team_to_opp[g["away_abbr"]] = g["home_abbr"]
-        team_home[g["home_abbr"]] = True
-        team_home[g["away_abbr"]] = False
-
+        active.add(g["home_abbr"]); active.add(g["away_abbr"])
+        team_to_opp[g["home_abbr"]] = g["away_abbr"]; team_to_opp[g["away_abbr"]] = g["home_abbr"]
+        team_home[g["home_abbr"]] = True; team_home[g["away_abbr"]] = False
     df = state.player_log_cache
-    players_tonight = df[df["PLAYER_TEAM"].isin(active_teams)]["PLAYER_NAME"].unique()
+    players = df[df["PLAYER_TEAM"].isin(active)]["PLAYER_NAME"].unique()
 
-    # Try to load Vegas lines (optional)
+    # Try Vegas lines (optional)
     vegas_lines = {}
     try:
         import importlib.util
         spec = importlib.util.spec_from_file_location("odds_mod", "10_odds_integration.py")
-        odds_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(odds_mod)
+        odds_mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(odds_mod)
         odds_games = await odds_mod.fetch_game_odds()
-        for og in odds_games[:5]:  # limit to 5 games to save API calls
+        for og in odds_games[:5]:
             try:
                 props = await odds_mod.fetch_player_props(og["game_id"])
-                for stat_key, players in props.get("props", {}).items():
-                    for player_name, info in players.items():
-                        vegas_lines[(player_name.lower(), stat_key)] = info["line"]
-            except Exception:
-                continue
-    except Exception:
-        pass
+                for stat_key, plist in props.get("props",{}).items():
+                    for pname, info in plist.items():
+                        vegas_lines[(pname.lower(), stat_key)] = info["line"]
+            except: continue
+    except: pass
 
     picks = []
-    for player_name in players_tonight:
-        p_df = df[df["PLAYER_NAME"] == player_name]
-        if len(p_df) < 10:
-            continue
-
+    for name in players:
+        p_df = df[df["PLAYER_NAME"]==name]
+        if len(p_df)<10: continue
         team = p_df["PLAYER_TEAM"].iloc[-1]
-        opp = team_to_opp.get(team, "")
-        is_home = team_home.get(team, True)
-
-        features = build_player_features(player_name, opp, is_home, game_date)
-        if features is None:
-            continue
-
-        projections = {}
-        for stat, model in state.prop_models.items():
-            projections[stat] = float(model.predict(features)[0])
-
-        last5 = p_df.tail(5)
-        last10 = p_df.tail(10)
-
-        for stat in ["PTS", "REB", "AST"]:
-            if stat not in projections:
-                continue
-
+        opp = team_to_opp.get(team,""); is_home = team_home.get(team, True)
+        features = build_player_features(name, opp, is_home, game_date)
+        if features is None: continue
+        projections = {s: float(m.predict(features)[0]) for s,m in state.prop_models.items()}
+        last5 = p_df.tail(5); last10 = p_df.tail(10)
+        for stat in ["PTS","REB","AST"]:
+            if stat not in projections: continue
             proj = projections[stat]
-            avg10 = float(last10[stat].mean())
-            avg5 = float(last5[stat].mean())
-            std5 = float(last5[stat].std()) if len(last5) >= 3 else proj * 0.2
-
-            if proj < 5:
-                continue
-
-            form_trend = (avg5 - avg10) / max(avg10, 1.0)
-            consistency = 1.0 - min(std5 / max(avg5, 1.0), 1.0)
-
-            stat_key_map = {"PTS": "POINTS", "REB": "REBOUNDS", "AST": "ASSISTS"}
-            line_key = (player_name.lower(), stat_key_map[stat])
-            vegas_line = vegas_lines.get(line_key)
-
-            edge = None
-            edge_pct = 0
-            pick_side = None
+            if proj < 5: continue
+            avg10 = float(last10[stat].mean()); avg5 = float(last5[stat].mean())
+            std5 = float(last5[stat].std()) if len(last5)>=3 else proj*0.2
+            form_trend = (avg5-avg10)/max(avg10,1.0)
+            consistency = 1.0 - min(std5/max(avg5,1.0), 1.0)
+            stat_key = {"PTS":"POINTS","REB":"REBOUNDS","AST":"ASSISTS"}[stat]
+            vegas_line = vegas_lines.get((name.lower(), stat_key))
+            edge = None; edge_pct = 0; pick_side = None
             if vegas_line:
-                edge = proj - vegas_line
-                edge_pct = (edge / vegas_line) * 100 if vegas_line else 0
-                pick_side = "OVER" if edge > 0 else "UNDER"
-
-            base_score = consistency * 50
-            form_score = max(-15, min(15, form_trend * 100))
-            edge_score = abs(edge_pct) * 1.5 if edge else 0
-            confidence = min(99, max(0, base_score + form_score + edge_score + 20))
-
+                edge = proj - vegas_line; edge_pct = (edge/vegas_line)*100 if vegas_line else 0
+                pick_side = "OVER" if edge>0 else "UNDER"
+            confidence = min(99, max(0, consistency*50 + max(-15,min(15,form_trend*100)) + (abs(edge_pct)*1.5 if edge else 0) + 20))
             if vegas_line:
-                if abs(edge_pct) < 3:
-                    continue
-                elif abs(edge_pct) >= 10:
-                    recommendation = "STRONG " + pick_side
-                else:
-                    recommendation = pick_side
+                if abs(edge_pct)<3: continue
+                rec = ("STRONG " if abs(edge_pct)>=10 else "")+pick_side
             else:
-                if proj > avg10 * 1.05:
-                    recommendation = "OVER (model)"
-                    pick_side = "OVER"
-                else:
-                    continue
-
+                if proj > avg10*1.05: rec = "OVER (model)"; pick_side = "OVER"
+                else: continue
             picks.append({
-                "player": player_name,
-                "team": team,
-                "opponent": opp,
-                "home": is_home,
-                "stat": stat,
-                "projection": round(proj, 1),
-                "vegas_line": vegas_line,
-                "edge": round(edge, 2) if edge is not None else None,
-                "edge_pct": round(edge_pct, 1) if vegas_line else None,
-                "pick": pick_side,
-                "recommendation": recommendation,
-                "confidence": round(confidence),
-                "form": {
-                    "avg_last_5": round(avg5, 1),
-                    "avg_last_10": round(avg10, 1),
-                    "trending": "up" if form_trend > 0.05 else "down" if form_trend < -0.05 else "flat",
-                    "consistency": round(consistency * 100),
-                },
+                "player": name, "team": team, "opponent": opp, "home": is_home,
+                "stat": stat, "projection": round(proj,1), "vegas_line": vegas_line,
+                "edge": round(edge,2) if edge is not None else None,
+                "edge_pct": round(edge_pct,1) if vegas_line else None,
+                "pick": pick_side, "recommendation": rec, "confidence": round(confidence),
+                "form": {"avg_last_5": round(avg5,1), "avg_last_10": round(avg10,1),
+                         "trending": "up" if form_trend>0.05 else "down" if form_trend<-0.05 else "flat",
+                         "consistency": round(consistency*100)},
             })
+    picks.sort(key=lambda p: (abs(p.get("edge_pct") or 0), p["confidence"], p["form"]["consistency"]), reverse=True)
+    return {"date": game_date, "games": len(games),
+            "vegas_lines_loaded": len(vegas_lines)>0,
+            "total_candidates": len(picks), "top_picks": picks[:10]}
 
-    def sort_key(p):
-        edge = abs(p["edge_pct"]) if p.get("edge_pct") else 0
-        return (edge, p["confidence"], p["form"]["consistency"])
 
-    picks.sort(key=sort_key, reverse=True)
-    top10 = picks[:10]
-
+@app.get("/props/starts")
+async def start_sit(date_str: Optional[str] = None):
+    data = await fantasy_lineup(date_str)
+    players = data.get("players",[])
     return {
-        "date": game_date,
-        "games": len(games),
-        "vegas_lines_loaded": len(vegas_lines) > 0,
-        "total_candidates": len(picks),
-        "top_picks": top10,
+        "date": data.get("date"),
+        "must_start": [p for p in players if p["recommendation"]=="START" and p["grade"]=="A"][:10],
+        "start": [p for p in players if p["recommendation"]=="START" and p["grade"]=="B"][:10],
+        "flex": [p for p in players if p["recommendation"]=="FLEX"][:8],
+        "sit": [p for p in players if p["recommendation"]=="SIT"][:8],
     }
 
 
+# ─── Odds endpoints ───
+async def _load_odds_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("odds_mod", "10_odds_integration.py")
+    if spec is None: raise FileNotFoundError("10_odds_integration.py not found")
+    odds_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(odds_mod)
+    return odds_mod
+
+
+@app.get("/odds/games")
+async def odds_games():
+    try:
+        odds = await _load_odds_module()
+        return {"games": await odds.fetch_game_odds(), "usage": odds.get_usage()}
+    except Exception as e: raise HTTPException(502, f"Odds error: {e}")
+
+
+@app.get("/odds/live")
+async def odds_live():
+    try:
+        odds = await _load_odds_module()
+        return {"live_games": await odds.fetch_live_odds(), "usage": odds.get_usage()}
+    except Exception as e: raise HTTPException(502, f"Odds error: {e}")
+
+
+@app.get("/odds/player_props/{game_id}")
+async def odds_player_props(game_id: str):
+    try:
+        odds = await _load_odds_module()
+        props = await odds.fetch_player_props(game_id)
+        return {**props, "usage": odds.get_usage()}
+    except Exception as e: raise HTTPException(502, f"Props error: {e}")
+
+
+@app.get("/odds/usage")
+async def odds_usage():
+    try:
+        odds = await _load_odds_module()
+        return odds.get_usage()
+    except: return {"remaining": "unknown", "used": "unknown"}
+
+
 if __name__ == "__main__":
-    import os
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("5_api_server:app", host="0.0.0.0", port=port, reload=False, log_level="info")
