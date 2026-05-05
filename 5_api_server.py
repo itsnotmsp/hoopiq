@@ -319,9 +319,20 @@ async def model_info():
 
 @app.get("/games/today")
 async def games_today():
+    """Return today's NBA games using Eastern Time (NBA schedule timezone)."""
     try:
-        games = await get_espn_games()
-        return {"date": date.today().isoformat(), "games": games, "count": len(games)}
+        from datetime import timezone, timedelta
+        # NBA games are scheduled in Eastern Time
+        et = timezone(timedelta(hours=-5))  # EST (use -4 in summer for EDT)
+        today_et = datetime.now(timezone.utc).astimezone(et).date()
+        date_str = today_et.strftime("%Y%m%d")
+        games = await get_espn_games(date_str)
+        return {
+            "date": today_et.isoformat(),
+            "timezone": "America/New_York",
+            "games": games,
+            "count": len(games)
+        }
     except Exception as e:
         raise HTTPException(502, f"ESPN API error: {e}")
 
@@ -443,6 +454,76 @@ async def predict_live():
 # ---------------------------------------------------------------------------
 # Dev server
 # ---------------------------------------------------------------------------
+
+
+# -----------------------------------------------------------------------
+# Routes — Real Odds (The Odds API)
+# -----------------------------------------------------------------------
+
+@app.get("/odds/games")
+async def odds_games():
+    """Real game odds (moneyline, spread, totals) from DraftKings/FanDuel/BetMGM."""
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("odds_mod", "10_odds_integration.py")
+        odds_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(odds_mod)
+        games = await odds_mod.fetch_game_odds()
+        return {"games": games, "count": len(games), "usage": odds_mod.get_usage()}
+    except FileNotFoundError:
+        raise HTTPException(503, "Odds module not found. Add 10_odds_integration.py")
+    except ValueError as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"Odds API error: {e}")
+
+
+@app.get("/odds/live")
+async def odds_live():
+    """Live in-game odds (auto-refreshed every 60 seconds)."""
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("odds_mod", "10_odds_integration.py")
+        odds_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(odds_mod)
+        games = await odds_mod.fetch_live_odds()
+        return {"live_games": games, "count": len(games), "usage": odds_mod.get_usage()}
+    except FileNotFoundError:
+        raise HTTPException(503, "Odds module not found")
+    except ValueError as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"Live odds error: {e}")
+
+
+@app.get("/odds/player_props/{game_id}")
+async def odds_player_props(game_id: str):
+    """Player prop lines (PTS/REB/AST) for a specific game."""
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("odds_mod", "10_odds_integration.py")
+        odds_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(odds_mod)
+        props = await odds_mod.fetch_player_props(game_id)
+        return {**props, "usage": odds_mod.get_usage()}
+    except FileNotFoundError:
+        raise HTTPException(503, "Odds module not found")
+    except Exception as e:
+        raise HTTPException(502, f"Props error: {e}")
+
+
+@app.get("/odds/usage")
+async def odds_usage():
+    """Check remaining Odds API requests."""
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("odds_mod", "10_odds_integration.py")
+        odds_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(odds_mod)
+        return odds_mod.get_usage()
+    except Exception as e:
+        return {"error": str(e)}
+
 
 if __name__ == "__main__":
     import os
