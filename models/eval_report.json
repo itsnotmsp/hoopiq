@@ -1,9 +1,9 @@
 {
   "holdout": {
-    "accuracy": 0.6917,
-    "auc": 0.7527,
-    "log_loss": 0.5781,
-    "brier": 0.1979,
+    "accuracy": 0.7039,
+    "auc": 0.7747,
+    "log_loss": 0.5585,
+    "brier": 0.1893,
     "n_samples": 493
   },
   "cv": {
@@ -12,54 +12,54 @@
         "fold": 1,
         "n_train": 818,
         "n_test": 820,
-        "accuracy": 0.5963,
-        "auc": 0.6138,
-        "log_loss": 0.7253,
-        "brier": 0.2567
+        "accuracy": 0.5927,
+        "auc": 0.6036,
+        "log_loss": 0.7247,
+        "brier": 0.2566
       },
       {
         "fold": 2,
         "n_train": 1638,
         "n_test": 820,
-        "accuracy": 0.622,
-        "auc": 0.6793,
-        "log_loss": 0.6582,
-        "brier": 0.2316
+        "accuracy": 0.6378,
+        "auc": 0.6883,
+        "log_loss": 0.6587,
+        "brier": 0.23
       },
       {
         "fold": 3,
         "n_train": 2458,
         "n_test": 820,
-        "accuracy": 0.6012,
-        "auc": 0.6376,
-        "log_loss": 0.7052,
-        "brier": 0.2486
+        "accuracy": 0.6146,
+        "auc": 0.6394,
+        "log_loss": 0.7019,
+        "brier": 0.2471
       },
       {
         "fold": 4,
         "n_train": 3278,
         "n_test": 820,
-        "accuracy": 0.6512,
-        "auc": 0.6966,
-        "log_loss": 0.6435,
-        "brier": 0.2229
+        "accuracy": 0.6549,
+        "auc": 0.6961,
+        "log_loss": 0.6432,
+        "brier": 0.2235
       },
       {
         "fold": 5,
         "n_train": 4098,
         "n_test": 820,
-        "accuracy": 0.6378,
-        "auc": 0.684,
-        "log_loss": 0.6465,
-        "brier": 0.2255
+        "accuracy": 0.6463,
+        "auc": 0.6964,
+        "log_loss": 0.6382,
+        "brier": 0.2213
       }
     ],
     "summary": {
-      "accuracy_mean": 0.6217,
-      "accuracy_std": 0.021,
-      "auc_mean": 0.6623,
-      "logloss_mean": 0.6757,
-      "brier_mean": 0.2371
+      "accuracy_mean": 0.6293,
+      "accuracy_std": 0.0227,
+      "auc_mean": 0.6648,
+      "logloss_mean": 0.6733,
+      "brier_mean": 0.2357
     }
   },
   "params": {
@@ -78,5 +78,5 @@
     "n_jobs": -1,
     "tree_method": "hist"
   },
-  "n_features": 141
+  "n_features": 189
 }
