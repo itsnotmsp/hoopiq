@@ -550,6 +550,285 @@ async def odds_usage():
     except: return {"remaining": "unknown", "used": "unknown"}
 
 
+# ─── History Tracking ────────────────────────────────────────────────────
+HISTORY_PATH = DATA_DIR / "predictions_log.json"
+
+
+def load_history():
+    if HISTORY_PATH.exists():
+        try:
+            return json.loads(HISTORY_PATH.read_text())
+        except:
+            return []
+    return []
+
+
+def save_history(records):
+    HISTORY_PATH.write_text(json.dumps(records, indent=2))
+
+
+class HistoryEntry(BaseModel):
+    type: str  # "game" or "prop"
+    home_team: Optional[str] = None
+    away_team: Optional[str] = None
+    matchup: Optional[str] = None
+    predicted_winner: Optional[str] = None
+    confidence: Optional[str] = None
+    home_win_prob: Optional[float] = None
+    away_win_prob: Optional[float] = None
+    player: Optional[str] = None
+    stat: Optional[str] = None
+    pick: Optional[str] = None
+    line: Optional[float] = None
+    projection: Optional[float] = None
+    notes: Optional[str] = None
+
+
+class ResultUpdate(BaseModel):
+    result: str  # "WIN", "LOSS", "PENDING"
+    actual_score: Optional[str] = None
+    actual_value: Optional[float] = None
+
+
+@app.post("/history/log")
+async def log_prediction(entry: HistoryEntry):
+    """Log a prediction to track later."""
+    records = load_history()
+    new_record = {
+        "id": f"pred_{int(datetime.now().timestamp() * 1000)}",
+        "logged_at": datetime.now(timezone.utc).isoformat(),
+        "result": "PENDING",
+        **entry.dict(exclude_none=True),
+    }
+    records.insert(0, new_record)
+    save_history(records[:500])  # keep last 500
+    return {"id": new_record["id"], "logged": True}
+
+
+@app.get("/history")
+async def get_history(filter_type: Optional[str] = None, limit: int = 100):
+    """Get prediction history with stats."""
+    records = load_history()
+
+    if filter_type:
+        records = [r for r in records if r.get("type") == filter_type]
+
+    # Compute win rate stats
+    completed = [r for r in records if r.get("result") in ("WIN", "LOSS")]
+    wins = sum(1 for r in completed if r.get("result") == "WIN")
+    losses = sum(1 for r in completed if r.get("result") == "LOSS")
+    pending = sum(1 for r in records if r.get("result") == "PENDING")
+
+    win_rate = (wins / len(completed) * 100) if completed else 0
+
+    # Streak calculation
+    streak = 0
+    streak_type = None
+    for r in records:
+        if r.get("result") == "PENDING":
+            continue
+        if streak_type is None:
+            streak_type = r["result"]
+            streak = 1
+        elif r["result"] == streak_type:
+            streak += 1
+        else:
+            break
+
+    return {
+        "stats": {
+            "total": len(records),
+            "wins": wins,
+            "losses": losses,
+            "pending": pending,
+            "win_rate": round(win_rate, 1),
+            "streak": streak,
+            "streak_type": streak_type,
+        },
+        "records": records[:limit],
+    }
+
+
+@app.post("/history/{record_id}/result")
+async def update_result(record_id: str, update: ResultUpdate):
+    """Mark a prediction as WIN or LOSS."""
+    records = load_history()
+    found = False
+    for r in records:
+        if r.get("id") == record_id:
+            r["result"] = update.result.upper()
+            r["resolved_at"] = datetime.now(timezone.utc).isoformat()
+            if update.actual_score:
+                r["actual_score"] = update.actual_score
+            if update.actual_value is not None:
+                r["actual_value"] = update.actual_value
+            found = True
+            break
+
+    if not found:
+        raise HTTPException(404, "Record not found")
+
+    save_history(records)
+    return {"updated": True, "id": record_id}
+
+
+@app.delete("/history/{record_id}")
+async def delete_record(record_id: str):
+    records = load_history()
+    new_records = [r for r in records if r.get("id") != record_id]
+    if len(new_records) == len(records):
+        raise HTTPException(404, "Record not found")
+    save_history(new_records)
+    return {"deleted": True}
+
+
+# ─── Game Prediction with Reasoning ──────────────────────────────────────
+
+def _generate_reasoning(home, away, home_prob, features_vec):
+    """Generate human-readable reasons for the prediction."""
+    if state.game_log_cache is None:
+        return ["Prediction based on team stats"]
+
+    df = state.game_log_cache
+    cutoff = pd.Timestamp(date.today().isoformat())
+
+    def team_recent(abbr):
+        t = df[(df["TEAM_ABBREVIATION"] == abbr) & (df["GAME_DATE"] < cutoff)]
+        return t.sort_values("GAME_DATE").tail(10)
+
+    h_df = team_recent(home)
+    a_df = team_recent(away)
+
+    if len(h_df) < 5 or len(a_df) < 5:
+        return ["Insufficient recent data for detailed analysis"]
+
+    reasons = []
+    winner = home if home_prob >= 0.5 else away
+    loser  = away if winner == home else home
+    winner_df = h_df if winner == home else a_df
+    loser_df  = a_df if winner == home else h_df
+
+    # 1. Form / record
+    w_wins = (winner_df["WL"] == "W").sum()
+    l_wins = (loser_df["WL"] == "W").sum()
+    if w_wins > l_wins:
+        reasons.append(f"{winner} is {w_wins}-{10-w_wins} in last 10 games vs {loser}\'s {l_wins}-{10-l_wins}")
+
+    # 2. Net rating (point differential)
+    w_pm = winner_df["PLUS_MINUS"].mean()
+    l_pm = loser_df["PLUS_MINUS"].mean()
+    if abs(w_pm - l_pm) > 2:
+        diff = w_pm - l_pm
+        reasons.append(f"{winner} has a +{diff:.1f} point differential edge over {loser}")
+
+    # 3. Scoring
+    w_pts = winner_df["PTS"].mean()
+    l_pts = loser_df["PTS"].mean()
+    if w_pts - l_pts > 3:
+        reasons.append(f"{winner} averaging {w_pts:.1f} PPG vs {loser}\'s {l_pts:.1f}")
+    elif l_pts - w_pts > 3:
+        reasons.append(f"{loser} actually scores more ({l_pts:.1f} vs {w_pts:.1f}) but model favors {winner} on other factors")
+
+    # 4. Three-point shooting
+    if "FG3_PCT" in winner_df.columns:
+        w_3p = winner_df["FG3_PCT"].mean()
+        l_3p = loser_df["FG3_PCT"].mean()
+        if w_3p - l_3p > 0.02:
+            reasons.append(f"{winner} shooting better from 3 ({w_3p*100:.1f}% vs {l_3p*100:.1f}%)")
+
+    # 5. Home court
+    if winner == home:
+        h_home_games = h_df[h_df.get("IS_HOME", pd.Series([False]*len(h_df))) == True]
+        if len(h_home_games) >= 3:
+            home_wr = (h_home_games["WL"] == "W").mean()
+            if home_wr > 0.6:
+                reasons.append(f"{home} is {int(home_wr*100)}% at home in their last home games")
+
+    # 6. Recent momentum
+    last3_w = (winner_df.tail(3)["WL"] == "W").sum()
+    last3_l = (loser_df.tail(3)["WL"] == "W").sum()
+    if last3_w >= 2 and last3_l <= 1:
+        reasons.append(f"{winner} has {last3_w}-{3-last3_w} momentum in last 3 games")
+
+    # 7. Confidence framing
+    confidence_pct = max(home_prob, 1 - home_prob) * 100
+    if confidence_pct >= 70:
+        reasons.insert(0, f"Strong {int(confidence_pct)}% confidence pick — model sees clear edge")
+    elif confidence_pct >= 60:
+        reasons.insert(0, f"Moderate {int(confidence_pct)}% confidence — close matchup with slight edge")
+    else:
+        reasons.insert(0, f"Low {int(confidence_pct)}% confidence — toss-up, bet small if at all")
+
+    return reasons[:5]
+
+
+@app.post("/predict/game/explain")
+async def predict_game_with_reasoning(req: GamePredictRequest):
+    """Predict winner with detailed reasoning."""
+    if state.model is None:
+        raise HTTPException(503, "Model not loaded")
+    game_date = req.date or date.today().isoformat()
+    home, away = req.home_team.upper(), req.away_team.upper()
+    features = build_game_features(home, away, game_date)
+    home_prob = float(state.calibrated.predict_proba(features)[0][1]) if features is not None else 0.585
+    away_prob = 1.0 - home_prob
+    winner = home if home_prob >= 0.5 else away
+
+    reasoning = _generate_reasoning(home, away, home_prob, features)
+
+    return {
+        "home_team": home,
+        "away_team": away,
+        "home_win_prob": round(home_prob, 4),
+        "away_win_prob": round(away_prob, 4),
+        "predicted_winner": winner,
+        "confidence": confidence_label(max(home_prob, away_prob)),
+        "reasoning": reasoning,
+        "model_version": "xgb_v2_explained",
+    }
+
+
+@app.post("/predict/batch/explain")
+async def predict_batch_with_reasoning(req: BatchPredictRequest):
+    """Batch predict all games with reasoning included."""
+    if state.model is None:
+        raise HTTPException(503, "Model not loaded")
+    et = timezone(timedelta(hours=-5))
+    today_et = datetime.now(timezone.utc).astimezone(et).date()
+    game_date = req.date or today_et.isoformat()
+    try:
+        games = await get_espn_games(game_date.replace("-",""))
+    except Exception as e:
+        raise HTTPException(502, str(e))
+
+    results = []
+    for g in games:
+        features = build_game_features(g["home_abbr"], g["away_abbr"], game_date)
+        home_prob = float(state.calibrated.predict_proba(features)[0][1]) if features is not None else 0.585
+        away_prob = 1.0 - home_prob
+        winner = g["home_abbr"] if home_prob >= 0.5 else g["away_abbr"]
+        reasoning = _generate_reasoning(g["home_abbr"], g["away_abbr"], home_prob, features)
+        results.append({
+            "game_id": g["game_id"],
+            "matchup": f"{g['away_abbr']} @ {g['home_abbr']}",
+            "home_team": g["home_abbr"],
+            "away_team": g["away_abbr"],
+            "home_win_prob": round(home_prob, 4),
+            "away_win_prob": round(away_prob, 4),
+            "predicted_winner": winner,
+            "confidence": confidence_label(max(home_prob, away_prob)),
+            "reasoning": reasoning,
+            "spread": g["spread"],
+            "over_under": g["over_under"],
+            "status": g["status"],
+        })
+    return {
+        "date": game_date,
+        "predictions": results,
+        "model_accuracy_season": state.eval_report.get("holdout",{}).get("accuracy"),
+    }
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("5_api_server:app", host="0.0.0.0", port=port, reload=False, log_level="info")
