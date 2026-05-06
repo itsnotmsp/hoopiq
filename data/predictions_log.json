@@ -1,0 +1,90 @@
+[
+  {
+    "id": "pred_1778063351358",
+    "logged_at": "2026-05-06T10:29:11.358613+00:00",
+    "result": "PENDING",
+    "type": "prop",
+    "matchup": "PHI",
+    "player": "Jordan Clarkson",
+    "stat": "PTS",
+    "pick": "OVER",
+    "line": 5.5,
+    "projection": 12.8
+  },
+  {
+    "id": "pred_1778063348756",
+    "logged_at": "2026-05-06T10:29:08.756803+00:00",
+    "result": "PENDING",
+    "type": "prop",
+    "matchup": "NY",
+    "player": "Andre Drummond",
+    "stat": "REB",
+    "pick": "OVER",
+    "line": 3.5,
+    "projection": 7.1
+  },
+  {
+    "id": "pred_1778063346937",
+    "logged_at": "2026-05-06T10:29:06.937810+00:00",
+    "result": "PENDING",
+    "type": "prop",
+    "matchup": "SA",
+    "player": "Mike Conley",
+    "stat": "PTS",
+    "pick": "OVER",
+    "line": 4.5,
+    "projection": 8.7
+  },
+  {
+    "id": "pred_1778063345030",
+    "logged_at": "2026-05-06T10:29:05.030317+00:00",
+    "result": "PENDING",
+    "type": "prop",
+    "matchup": "MIN",
+    "player": "Luke Kornet",
+    "stat": "PTS",
+    "pick": "OVER",
+    "line": 3.5,
+    "projection": 6.5
+  },
+  {
+    "id": "pred_1778063242482",
+    "logged_at": "2026-05-06T10:27:22.482891+00:00",
+    "result": "PENDING",
+    "type": "prop",
+    "matchup": "NY",
+    "player": "Andre Drummond",
+    "stat": "PTS",
+    "pick": "OVER",
+    "line": 1.5,
+    "projection": 8.0
+  },
+  {
+    "id": "pred_1778062483216",
+    "logged_at": "2026-05-06T10:14:43.216694+00:00",
+    "result": "PENDING",
+    "type": "game",
+    "home_team": "SA",
+    "away_team": "MIN",
+    "matchup": "MIN @ SA",
+    "predicted_winner": "SA",
+    "confidence": "HIGH",
+    "home_win_prob": 0.7838,
+    "away_win_prob": 0.2162,
+    "notes": "Strong 78% confidence pick \u2014 model sees clear edge | SA is 8-2 in last 10 games vs MIN's 5-5 | SA has a +13.9 point differential edge over MIN | SA averaging 124.2 PPG vs MIN's 115.2 | SA is 80% at home in their last home games"
+  },
+  {
+    "id": "pred_1778062474957",
+    "logged_at": "2026-05-06T10:14:34.957522+00:00",
+    "result": "PENDING",
+    "type": "game",
+    "home_team": "NY",
+    "away_team": "PHI",
+    "matchup": "PHI @ NY",
+    "predicted_winner": "NY",
+    "confidence": "MEDIUM",
+    "home_win_prob": 0.6381,
+    "away_win_prob": 0.3619,
+    "notes": "Moderate 63% confidence \u2014 close matchup with slight edge | PHI actually scores more (118.0 vs 111.2) but model favors NY on other factors | NY is 80% at home in their last home games"
+  }
+]
