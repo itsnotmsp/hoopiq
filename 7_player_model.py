@@ -106,7 +106,7 @@ def engineer_features(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     feat_cols.append("IS_HOME")
 
     # Season game number (fatigue over season)
-    df["GAME_NUM"] = df.groupby(["PLAYER_ID", "SEASON_YEAR"]).cumcount() + 1
+    df["GAME_NUM"] = df.groupby(["PLAYER_ID", "SEASON"]).cumcount() + 1
     feat_cols.append("GAME_NUM")
 
     # Win rate (team playing well = more min, better stats)
