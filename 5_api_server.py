@@ -257,7 +257,7 @@ async def model_info():
     return {
         "n_features": len(state.feature_cols),
         "evaluation": state.eval_report.get("holdout",{}),
-        "cv": state.eval_report.get("cv",{}).get("summary",{}),
+        "cv": (state.eval_report.get("cv") or {}).get("summary", {}),
         "prop_models": {e["target"]: {"mae": e["mae"], "r2": e["r2"]} for e in state.prop_eval} if state.prop_eval else {},
     }
 
@@ -311,7 +311,7 @@ async def predict_batch(req: BatchPredictRequest):
             "predicted_winner": winner, "confidence": confidence_label(max(home_prob, away_prob)),
             "spread": g["spread"], "over_under": g["over_under"], "status": g["status"],
         })
-    return {"date": game_date, "predictions": results, "model_accuracy_season": state.eval_report.get("holdout",{}).get("accuracy")}
+    return {"date": game_date, "predictions": results, "model_accuracy_season": (state.eval_report.get("holdout") or {}).get("accuracy")}
 
 
 @app.get("/predict/live")
@@ -938,7 +938,7 @@ async def predict_batch_with_reasoning(req: BatchPredictRequest):
     return {
         "date": game_date,
         "predictions": results,
-        "model_accuracy_season": state.eval_report.get("holdout",{}).get("accuracy"),
+        "model_accuracy_season": (state.eval_report.get("holdout") or {}).get("accuracy"),
     }
 
 
@@ -1128,13 +1128,15 @@ async def analyze_game_deep(req: GamePredictRequest):
             home_match = home in og["home_team"].upper() or og["home_team"].split()[-1].upper()[:3] == home[:3]
             away_match = away in og["away_team"].upper() or og["away_team"].split()[-1].upper()[:3] == away[:3]
             if home_match and away_match:
-                ml_home_consensus = og["moneyline"].get(og["home_team"], {}).get("consensus")
-                ml_away_consensus = og["moneyline"].get(og["away_team"], {}).get("consensus")
+                ml_home_dict = og["moneyline"].get(og["home_team"]) or {}
+                ml_away_dict = og["moneyline"].get(og["away_team"]) or {}
+                ml_home_consensus = ml_home_dict.get("consensus")
+                ml_away_consensus = ml_away_dict.get("consensus")
                 # Spread (from home perspective)
-                spread_dict = og["spread"].get(og["home_team"], {})
+                spread_dict = og["spread"].get(og["home_team"]) or {}
                 spread_first = next((v for v in spread_dict.values() if isinstance(v, dict)), None)
                 # Total
-                total_dict = og["total"].get("Over", {})
+                total_dict = og["total"].get("Over") or {}
                 total_first = next((v for v in total_dict.values() if isinstance(v, dict)), None)
                 market = {
                     "available": True,
@@ -1210,25 +1212,25 @@ async def analyze_game_deep(req: GamePredictRequest):
     predicted_winner = home if home_prob >= 0.5 else away
     best_bet_options = []
 
-    if value_analysis.get("moneyline_value", {}).get("side"):
-        ml_v = value_analysis["moneyline_value"]
-        if "edge_pct" in ml_v:
-            best_bet_options.append({
-                "type": "MONEYLINE",
-                "side": ml_v["side"],
-                "edge": ml_v.get("edge_pct"),
-                "verdict": ml_v["verdict"],
-            })
+    # value_analysis fields are None when no market data was available, so guard
+    # against that with `or {}` before chaining .get() calls.
+    ml_v = value_analysis.get("moneyline_value") or {}
+    if ml_v.get("side") and "edge_pct" in ml_v:
+        best_bet_options.append({
+            "type": "MONEYLINE",
+            "side": ml_v["side"],
+            "edge": ml_v.get("edge_pct"),
+            "verdict": ml_v.get("verdict"),
+        })
 
-    if value_analysis.get("total_value"):
-        tv = value_analysis["total_value"]
-        if "side" in tv:
-            best_bet_options.append({
-                "type": "TOTAL",
-                "side": f"{tv['side']} {tv['market_total']}",
-                "edge": tv.get("diff"),
-                "verdict": tv["verdict"],
-            })
+    tv = value_analysis.get("total_value") or {}
+    if tv.get("side"):
+        best_bet_options.append({
+            "type": "TOTAL",
+            "side": f"{tv['side']} {tv.get('market_total')}",
+            "edge": tv.get("diff"),
+            "verdict": tv.get("verdict"),
+        })
 
     if not best_bet_options:
         best_bet_options.append({
