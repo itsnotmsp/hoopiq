@@ -1119,15 +1119,46 @@ async def analyze_game_deep(req: GamePredictRequest):
     # ── 8. BETTING MARKET ──
     # Try to fetch real odds
     market = {"available": False, "spread": None, "total": None, "ml_home": None, "ml_away": None}
+
+    # Map team abbreviations (what users pass in) → Odds API full team names.
+    # The Odds API uses full names like "New York Knicks", not abbreviations.
+    ODDS_TEAM_NAMES = {
+        "ATL": "Atlanta Hawks", "BOS": "Boston Celtics",
+        "BKN": "Brooklyn Nets", "BRK": "Brooklyn Nets",
+        "CHA": "Charlotte Hornets", "CHO": "Charlotte Hornets",
+        "CHI": "Chicago Bulls", "CLE": "Cleveland Cavaliers",
+        "DAL": "Dallas Mavericks", "DEN": "Denver Nuggets",
+        "DET": "Detroit Pistons",
+        "GSW": "Golden State Warriors", "GS": "Golden State Warriors",
+        "HOU": "Houston Rockets", "IND": "Indiana Pacers",
+        "LAC": "Los Angeles Clippers", "LAL": "Los Angeles Lakers",
+        "MEM": "Memphis Grizzlies", "MIA": "Miami Heat",
+        "MIL": "Milwaukee Bucks", "MIN": "Minnesota Timberwolves",
+        "NOP": "New Orleans Pelicans", "NO":  "New Orleans Pelicans",
+        "NYK": "New York Knicks",     "NY":  "New York Knicks",
+        "OKC": "Oklahoma City Thunder", "ORL": "Orlando Magic",
+        "PHI": "Philadelphia 76ers",
+        "PHX": "Phoenix Suns",        "PHO": "Phoenix Suns",
+        "POR": "Portland Trail Blazers",
+        "SAC": "Sacramento Kings",
+        "SAS": "San Antonio Spurs",   "SA":  "San Antonio Spurs",
+        "TOR": "Toronto Raptors",
+        "UTA": "Utah Jazz",           "UTAH": "Utah Jazz",
+        "WAS": "Washington Wizards",  "WSH": "Washington Wizards",
+    }
+
+    home_full = ODDS_TEAM_NAMES.get(home, home)
+    away_full = ODDS_TEAM_NAMES.get(away, away)
+
     try:
         import importlib.util
         spec = importlib.util.spec_from_file_location("odds_mod", "10_odds_integration.py")
         odds_mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(odds_mod)
         odds_games = await odds_mod.fetch_game_odds()
         for og in odds_games:
-            home_match = home in og["home_team"].upper() or og["home_team"].split()[-1].upper()[:3] == home[:3]
-            away_match = away in og["away_team"].upper() or og["away_team"].split()[-1].upper()[:3] == away[:3]
-            if home_match and away_match:
+            # Exact-match against the resolved full name; case-insensitive for safety.
+            if (og["home_team"].lower() == home_full.lower()
+                    and og["away_team"].lower() == away_full.lower()):
                 ml_home_dict = og["moneyline"].get(og["home_team"]) or {}
                 ml_away_dict = og["moneyline"].get(og["away_team"]) or {}
                 ml_home_consensus = ml_home_dict.get("consensus")
