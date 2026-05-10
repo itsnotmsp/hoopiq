@@ -1155,28 +1155,41 @@ async def analyze_game_deep(req: GamePredictRequest):
         spec = importlib.util.spec_from_file_location("odds_mod", "10_odds_integration.py")
         odds_mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(odds_mod)
         odds_games = await odds_mod.fetch_game_odds()
+
+        # Match the game by team SET (order-independent), so the user can pass
+        # home/away in either order and still get market data.
+        wanted = {home_full.lower(), away_full.lower()}
         for og in odds_games:
-            # Exact-match against the resolved full name; case-insensitive for safety.
-            if (og["home_team"].lower() == home_full.lower()
-                    and og["away_team"].lower() == away_full.lower()):
-                ml_home_dict = og["moneyline"].get(og["home_team"]) or {}
-                ml_away_dict = og["moneyline"].get(og["away_team"]) or {}
-                ml_home_consensus = ml_home_dict.get("consensus")
-                ml_away_consensus = ml_away_dict.get("consensus")
-                # Spread (from home perspective)
-                spread_dict = og["spread"].get(og["home_team"]) or {}
-                spread_first = next((v for v in spread_dict.values() if isinstance(v, dict)), None)
-                # Total
-                total_dict = og["total"].get("Over") or {}
-                total_first = next((v for v in total_dict.values() if isinstance(v, dict)), None)
-                market = {
-                    "available": True,
-                    "ml_home": ml_home_consensus,
-                    "ml_away": ml_away_consensus,
-                    "spread": spread_first.get("point") if spread_first else None,
-                    "total":  total_first.get("point") if total_first else None,
-                }
-                break
+            og_pair = {og["home_team"].lower(), og["away_team"].lower()}
+            if og_pair != wanted:
+                continue
+
+            # Look up market values keyed by the USER's stated home/away — so
+            # market.ml_home is always the moneyline for the team the user
+            # passed as home_team, regardless of who is actually hosting.
+            ml_home_dict = og["moneyline"].get(home_full) or {}
+            ml_away_dict = og["moneyline"].get(away_full) or {}
+            ml_home_consensus = ml_home_dict.get("consensus")
+            ml_away_consensus = ml_away_dict.get("consensus")
+
+            spread_dict_home = og["spread"].get(home_full) or {}
+            spread_first = next((v for v in spread_dict_home.values() if isinstance(v, dict)), None)
+
+            total_dict = og["total"].get("Over") or {}
+            total_first = next((v for v in total_dict.values() if isinstance(v, dict)), None)
+
+            # Note: og["home_team"] is the actual host (sportsbook's perspective),
+            # which may differ from the user's home_team. Surfacing it lets the
+            # frontend show "PHI hosting NYK" if the user queried NYK as home.
+            market = {
+                "available": True,
+                "ml_home":  ml_home_consensus,
+                "ml_away":  ml_away_consensus,
+                "spread":   spread_first.get("point") if spread_first else None,
+                "total":    total_first.get("point") if total_first else None,
+                "actual_host": og["home_team"],
+            }
+            break
     except Exception:
         pass
 
