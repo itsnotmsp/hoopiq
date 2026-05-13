@@ -444,7 +444,8 @@ nav{display:flex;gap:2px}
   <div class="metrics">
     <div class="mc"><div class="mc-lbl">Total predictions</div><div class="mc-val" id="h-total">—</div></div>
     <div class="mc"><div class="mc-lbl">Win rate</div><div class="mc-val" id="h-winrate" style="color:var(--accent)">—</div><div class="mc-sub"><span id="h-wins">0</span>W / <span id="h-losses">0</span>L</div></div>
-    <div class="mc"><div class="mc-lbl">Pending</div><div class="mc-val" id="h-pending" style="color:var(--accent2)">—</div><div class="mc-sub">Awaiting results</div></div>
+    <div class="mc"><div class="mc-lbl">Total P/L</div><div class="mc-val" id="h-pl">—</div><div class="mc-sub"><span id="h-roi">—</span> ROI · $<span id="h-staked">0</span> staked</div></div>
+    <div class="mc"><div class="mc-lbl">Pending</div><div class="mc-val" id="h-pending" style="color:var(--accent2)">—</div><div class="mc-sub">$<span id="h-at-risk">0</span> at risk</div></div>
     <div class="mc"><div class="mc-lbl">Streak</div><div class="mc-val" id="h-streak">—</div><div class="mc-sub" id="h-streak-type">—</div></div>
   </div>
   <div class="actions">
@@ -572,12 +573,7 @@ const ODDS_TEAM_NAMES = {
 async function loadOdds(games) {
   if (!games.length) return;
   try {
-    const r = await fetch(`${API_URL}/odds/games`);
-    if (!r.ok) {
-      console.warn("Backend /odds/games returned", r.status);
-      return;
-    }
-    const data = await r.json();
+    const data = await apiGet("/odds/games");
     const list = data.games || [];
     list.forEach(g => {
       // Index by both home|away and the reverse, so getOdds() matches either order.
@@ -1031,7 +1027,12 @@ function renderTop10() {
             <div class="pf-item">Trend: ${trendIcon} ${p.form.trending}</div>
             <div class="pf-item">Consistency: <b>${p.form.consistency}%</b></div>
           </div>
-          <button class="log-btn" onclick="event.stopPropagation();logPropPick('${p.player.replace(/'/g,"\\'")}','${p.opponent}','${p.stat}',${p.vegas_line||p.projection},${p.projection},'${p.pick||"OVER"}',this,'${p.team}')">+ Track this pick</button>
+          ${(p.odds && (p.odds.over_decimal || p.odds.under_decimal)) ? `
+            <div class="pick-form-mini" style="margin-top:.4rem;border-top:1px dashed var(--b2);padding-top:.6rem">
+              <div class="pf-item">Sportsbook Over ${p.vegas_line || "—"}: <b>${p.odds.over_decimal ? p.odds.over_decimal.toFixed(2) : "—"}</b></div>
+              <div class="pf-item">Sportsbook Under ${p.vegas_line || "—"}: <b>${p.odds.under_decimal ? p.odds.under_decimal.toFixed(2) : "—"}</b></div>
+            </div>` : ""}
+          <button class="log-btn" onclick='event.stopPropagation();logPropPick(${JSON.stringify(p.player)}, ${JSON.stringify(p.opponent)}, ${JSON.stringify(p.stat)}, ${p.vegas_line || p.projection}, ${p.projection}, ${JSON.stringify(p.pick || "OVER")}, this, ${JSON.stringify(p.team)}, ${JSON.stringify(p.odds || {})})'>+ Track this pick</button>
         </div>
       </div>
     </div>`;
@@ -1057,13 +1058,112 @@ showPage = function(name, btn) {
 let historyData = [];
 let historyFilter = "all";
 
-async function logGamePred(i, res) {
-  const g = gamesData[i];
-  const btn = document.getElementById("log-btn-" + i);
-  btn.disabled = true;
-  btn.textContent = "Logging...";
+// ─── BET LOGGING MODAL ──────────────────────────────────────────────────────
+// State for the current "in-flight" bet being composed. Holds the base payload
+// fields (player/team/etc.) plus the user's choices (side, odds, stake).
+let betDraft = null;
+
+function openBetModal({title, sub, sides, basePayload}) {
+  betDraft = { sides, basePayload, sideIdx: null };
+  document.getElementById("bet-title").textContent = title;
+  document.getElementById("bet-sub").textContent = sub || "";
+  document.getElementById("bet-stake").value = 100;
+  document.getElementById("bet-odds").value = "";
+  document.getElementById("bet-submit-btn").disabled = true;
+
+  // Render side buttons
+  document.getElementById("bet-sides").innerHTML = sides.map((s, i) => `
+    <button class="bet-side-btn" onclick="pickBetSide(${i})" id="bet-side-${i}">
+      <div class="bet-side-label">${s.label}</div>
+      <div class="bet-side-name">${s.name}</div>
+      <div class="bet-side-odds ${s.odds == null ? 'dim' : ''}">${s.odds == null ? 'no odds' : s.odds.toFixed(2)}</div>
+    </button>
+  `).join("");
+
+  updateBetPreview();
+  document.getElementById("bet-modal").classList.add("show");
+}
+
+function pickBetSide(i) {
+  if (!betDraft) return;
+  betDraft.sideIdx = i;
+  document.querySelectorAll("#bet-sides .bet-side-btn").forEach((b, idx) => {
+    b.classList.toggle("active", idx === i);
+  });
+  // Auto-fill odds field from the selected side, if known.
+  const s = betDraft.sides[i];
+  if (s.odds != null) document.getElementById("bet-odds").value = s.odds.toFixed(2);
+  updateBetPreview();
+}
+
+function updateBetPreview() {
+  const odds  = parseFloat(document.getElementById("bet-odds").value);
+  const stake = parseFloat(document.getElementById("bet-stake").value);
+  const ok = betDraft && betDraft.sideIdx != null
+             && Number.isFinite(odds) && odds > 1
+             && Number.isFinite(stake) && stake > 0;
+  document.getElementById("bet-submit-btn").disabled = !ok;
+  if (!ok) {
+    document.getElementById("bet-preview").innerHTML =
+      "Pick a side and enter odds to see potential payout.";
+    return;
+  }
+  const profit = stake * (odds - 1);
+  const payout = stake * odds;
+  document.getElementById("bet-preview").innerHTML =
+    `If WIN: <span class="gain">+$${profit.toFixed(2)}</span> profit (payout $${payout.toFixed(2)})<br>` +
+    `If LOSS: <span class="loss">-$${stake.toFixed(2)}</span>`;
+}
+
+async function submitBet() {
+  if (!betDraft || betDraft.sideIdx == null) return;
+  const btn = document.getElementById("bet-submit-btn");
+  btn.disabled = true; btn.textContent = "Logging...";
+  const side  = betDraft.sides[betDraft.sideIdx];
+  const odds  = parseFloat(document.getElementById("bet-odds").value);
+  const stake = parseFloat(document.getElementById("bet-stake").value);
   try {
     await apiPost("/history/log", {
+      ...betDraft.basePayload,
+      side:  side.value,   // "BOS" / "NYK" / "OVER" / "UNDER"
+      pick:  side.value,   // back-compat — older history-renderer reads "pick"
+      odds_decimal: odds,
+      stake: stake,
+    });
+    closeBetModal();
+    if (document.getElementById("page-history").style.display !== "none") loadHistory();
+  } catch (e) {
+    btn.disabled = false; btn.textContent = "Log bet";
+    alert("Error: " + e.message);
+  }
+}
+
+function closeBetModal() {
+  document.getElementById("bet-modal").classList.remove("show");
+  betDraft = null;
+  document.getElementById("bet-submit-btn").textContent = "Log bet";
+}
+
+// ─── GAME PREDICTION LOG (opens modal) ──────────────────────────────────────
+async function logGamePred(i, res) {
+  const g = gamesData[i];
+  // Pull current ML odds for this game from oddsData (populated by loadOdds()).
+  const oddsKey = (ODDS_TEAM_NAMES[g.home_abbr] || g.home_abbr) + "|"
+                + (ODDS_TEAM_NAMES[g.away_abbr] || g.away_abbr);
+  const e = oddsData[oddsKey];
+  const homeDec = e ? parseFloat(americanToDecimal(e.ml_home)) : null;
+  const awayDec = e ? parseFloat(americanToDecimal(e.ml_away)) : null;
+
+  openBetModal({
+    title: `Log bet: ${g.away_abbr} @ ${g.home_abbr}`,
+    sub:   `Model favors ${res.predicted_winner} (${(Math.max(res.home_win_prob, res.away_win_prob)*100).toFixed(0)}% confidence). Pick which side YOU want to bet on.`,
+    sides: [
+      { label: "Home", value: g.home_abbr, name: g.home_abbr,
+        odds: Number.isFinite(homeDec) ? homeDec : null },
+      { label: "Away", value: g.away_abbr, name: g.away_abbr,
+        odds: Number.isFinite(awayDec) ? awayDec : null },
+    ],
+    basePayload: {
       type: "game",
       home_team: g.home_abbr,
       away_team: g.away_abbr,
@@ -1073,31 +1173,34 @@ async function logGamePred(i, res) {
       home_win_prob: res.home_win_prob,
       away_win_prob: res.away_win_prob,
       notes: (res.reasoning || []).join(" | "),
-    });
-    btn.classList.add("logged");
-    btn.textContent = "✓ Tracked";
-    btn.disabled = true;
-  } catch(e) {
-    btn.disabled = false;
-    btn.textContent = "Failed: " + e.message;
-  }
+    },
+  });
 }
 
-async function logPropPred(player, opp, stat, line, projection, pick) {
-  try {
-    await apiPost("/history/log", {
+// ─── PROP PICK LOG (opens modal) ────────────────────────────────────────────
+function logPropPick(player, opp, stat, line, projection, modelPick, btn, team, oddsData) {
+  // oddsData here is the per-pick "odds" object from /props/top10 (over_decimal/under_decimal).
+  const od = oddsData || {};
+  const stat_word = ({PTS:"points",REB:"rebounds",AST:"assists"})[stat] || stat;
+  openBetModal({
+    title: `Log prop: ${player} ${stat_word}`,
+    sub:   `${team} ${opp ? "vs " + opp : ""} · Model projects ${projection} · Line ${line}`,
+    sides: [
+      { label: `OVER ${line}`, value: "OVER", name: `OVER ${line} ${stat_word}`,
+        odds: Number.isFinite(od.over_decimal) ? od.over_decimal : null },
+      { label: `UNDER ${line}`, value: "UNDER", name: `UNDER ${line} ${stat_word}`,
+        odds: Number.isFinite(od.under_decimal) ? od.under_decimal : null },
+    ],
+    basePayload: {
       type: "prop",
       player: player,
       stat: stat,
-      pick: pick,
       line: line,
       projection: projection,
       matchup: opp,
-    });
-    alert("Pick tracked!");
-  } catch(e) {
-    alert("Error: " + e.message);
-  }
+      notes: `Model pick: ${modelPick}`,
+    },
+  });
 }
 
 async function autoUpdateResults() {
@@ -1135,6 +1238,14 @@ async function loadHistory() {
     document.getElementById("h-streak").textContent = s.streak || "0";
     document.getElementById("h-streak-type").textContent = s.streak_type ? s.streak_type + " streak" : "—";
     document.getElementById("h-streak").style.color = s.streak_type === "WIN" ? "var(--green)" : s.streak_type === "LOSS" ? "var(--red)" : "var(--muted)";
+    // P/L card
+    const pl = Number(s.total_profit || 0);
+    const plEl = document.getElementById("h-pl");
+    plEl.textContent = (pl >= 0 ? "+$" : "-$") + Math.abs(pl).toFixed(2);
+    plEl.style.color = pl > 0 ? "var(--green)" : pl < 0 ? "var(--red)" : "var(--muted)";
+    document.getElementById("h-roi").textContent = (s.roi_pct >= 0 ? "+" : "") + (s.roi_pct || 0) + "%";
+    document.getElementById("h-staked").textContent  = (s.total_staked || 0).toFixed(2);
+    document.getElementById("h-at-risk").textContent = (s.pending_at_risk || 0).toFixed(2);
     renderHistory();
   } catch(e) {
     document.getElementById("history-list").innerHTML = `<div class="empty">Could not load history<br><small>${e.message}</small></div>`;
@@ -1167,14 +1278,36 @@ function renderHistory() {
     const date = r.logged_at ? new Date(r.logged_at).toLocaleString() : "";
     let title;
     if(r.type === "game") {
-      title = `${r.matchup || ""} → ${r.predicted_winner} wins`;
+      const sideStr = r.side ? ` · betting ${r.side}` : "";
+      title = `${r.matchup || ""} → model: ${r.predicted_winner}${sideStr}`;
     } else {
       const teamPrefix = r.matchup ? `[${r.matchup}] ` : "";
-      title = `${teamPrefix}${r.player} ${r.stat} ${r.pick} ${r.line || ""}`;
+      title = `${teamPrefix}${r.player} ${r.stat} ${r.side || r.pick || ""} ${r.line || ""}`;
     }
     const sub = r.type === "game"
       ? `${(r.home_win_prob*100).toFixed(0)}%/${(r.away_win_prob*100).toFixed(0)}% · ${r.confidence || ""}`
       : `Projection: ${r.projection || "—"} · vs line ${r.line || "—"}`;
+
+    // Betting strip: stake + odds + P/L (only shown when stake recorded)
+    let betStrip = "";
+    if (r.stake && r.stake > 0) {
+      const odds = r.odds_decimal ? r.odds_decimal.toFixed(2) : "—";
+      const pl = Number(r.profit_loss || 0);
+      let plHtml = "—";
+      if (result === "WIN") {
+        plHtml = `<span style="color:var(--green);font-weight:600">+$${pl.toFixed(2)}</span>`;
+      } else if (result === "LOSS") {
+        plHtml = `<span style="color:var(--red);font-weight:600">-$${Math.abs(pl).toFixed(2)}</span>`;
+      } else if (r.odds_decimal) {
+        const potential = r.stake * (r.odds_decimal - 1);
+        plHtml = `<span style="color:var(--muted)">if win: +$${potential.toFixed(2)}</span>`;
+      }
+      betStrip = `<div class="h-sub" style="margin-top:.3rem;font-family:'DM Mono',monospace;font-size:.78rem">
+        $${r.stake} @ ${odds} → ${plHtml}
+      </div>`;
+    } else {
+      betStrip = `<div class="h-sub" style="margin-top:.3rem;font-size:.75rem;color:var(--muted);opacity:.7">(no stake recorded)</div>`;
+    }
 
     let reasonHtml = "";
     if(r.notes) {
@@ -1200,6 +1333,7 @@ function renderHistory() {
       <div class="h-info">
         <div class="h-title">${title}</div>
         <div class="h-sub">${sub}</div>
+        ${betStrip}
         ${reasonHtml}
         <div class="h-meta">${date}</div>
       </div>
@@ -1438,6 +1572,60 @@ init();
   <div class="modal-box">
     <button class="modal-close" onclick="closeAnalysis()">×</button>
     <div id="analysis-content"><div class="spin"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════ BET LOG MODAL ════════════════════════ -->
+<style>
+  .bet-modal-box{max-width:480px;margin:5vh auto;background:var(--s1);border:1px solid var(--b2);border-radius:var(--radius);padding:1.8rem;position:relative}
+  .bet-modal-title{font-size:1.25rem;font-weight:600;margin-bottom:.4rem}
+  .bet-modal-sub{font-size:.85rem;color:var(--muted);margin-bottom:1.2rem}
+  .bet-side-grid{display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin-bottom:1.2rem}
+  .bet-side-btn{padding:.9rem;border:1px solid var(--b2);background:var(--s2);border-radius:var(--radius-sm);
+                cursor:pointer;color:var(--text);text-align:left;transition:all .15s}
+  .bet-side-btn:hover{border-color:var(--accent);background:var(--s3)}
+  .bet-side-btn.active{border-color:var(--accent);background:rgba(249,115,22,.12);box-shadow:0 0 0 1px var(--accent)}
+  .bet-side-label{font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  .bet-side-name{font-size:1rem;font-weight:600;margin-top:.1rem}
+  .bet-side-odds{font-family:'DM Mono',monospace;font-size:1.1rem;color:var(--accent2);margin-top:.3rem}
+  .bet-side-odds.dim{color:var(--muted);font-size:.85rem}
+  .bet-field{margin-bottom:1rem}
+  .bet-field-label{font-size:.75rem;color:var(--muted);margin-bottom:.3rem;text-transform:uppercase;letter-spacing:.04em}
+  .bet-input{width:100%;padding:.7rem .9rem;background:var(--s2);border:1px solid var(--b2);
+             border-radius:var(--radius-sm);color:var(--text);font-family:'DM Mono',monospace;font-size:.95rem}
+  .bet-input:focus{outline:none;border-color:var(--accent)}
+  .bet-summary{padding:.9rem;background:var(--s2);border-radius:var(--radius-sm);font-size:.85rem;
+               color:var(--muted);margin-bottom:1.2rem;line-height:1.6}
+  .bet-summary b{color:var(--text);font-family:'DM Mono',monospace}
+  .bet-summary .gain{color:var(--green);font-weight:600}
+  .bet-summary .loss{color:var(--red);font-weight:600}
+  .bet-actions{display:flex;gap:.6rem}
+  .bet-submit{flex:1;padding:.85rem;background:var(--accent);color:#000;border:none;
+              border-radius:var(--radius-sm);font-weight:600;cursor:pointer;font-size:.95rem}
+  .bet-submit:disabled{opacity:.4;cursor:not-allowed}
+  .bet-cancel{padding:.85rem 1.2rem;background:var(--s2);color:var(--text);border:1px solid var(--b2);
+              border-radius:var(--radius-sm);cursor:pointer;font-size:.95rem}
+</style>
+<div class="modal-overlay" id="bet-modal">
+  <div class="bet-modal-box">
+    <button class="modal-close" onclick="closeBetModal()">×</button>
+    <div class="bet-modal-title" id="bet-title">Log a bet</div>
+    <div class="bet-modal-sub" id="bet-sub"></div>
+    <div class="bet-field-label">Side</div>
+    <div class="bet-side-grid" id="bet-sides"></div>
+    <div class="bet-field">
+      <div class="bet-field-label">Decimal odds</div>
+      <input type="number" step="0.01" min="1.01" class="bet-input" id="bet-odds" oninput="updateBetPreview()" placeholder="e.g. 1.85">
+    </div>
+    <div class="bet-field">
+      <div class="bet-field-label">Stake ($)</div>
+      <input type="number" step="1" min="1" class="bet-input" id="bet-stake" value="100" oninput="updateBetPreview()">
+    </div>
+    <div class="bet-summary" id="bet-preview">Pick a side and enter odds to see potential payout.</div>
+    <div class="bet-actions">
+      <button class="bet-cancel" onclick="closeBetModal()">Cancel</button>
+      <button class="bet-submit" id="bet-submit-btn" onclick="submitBet()" disabled>Log bet</button>
+    </div>
   </div>
 </div>
 

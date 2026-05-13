@@ -11,7 +11,11 @@
     "confidence": "MEDIUM",
     "home_win_prob": 0.6381,
     "away_win_prob": 0.3619,
-    "notes": "Moderate 63% confidence \u2014 close matchup with slight edge | PHI actually scores more (118.0 vs 111.2) but model favors NY on other factors | NY is 80% at home in their last home games"
+    "notes": "Moderate 63% confidence \u2014 close matchup with slight edge | PHI actually scores more (118.0 vs 111.2) but model favors NY on other factors | NY is 80% at home in their last home games",
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "NY"
   },
   {
     "id": "pred_1778062483216",
@@ -25,7 +29,11 @@
     "confidence": "HIGH",
     "home_win_prob": 0.7838,
     "away_win_prob": 0.2162,
-    "notes": "Strong 78% confidence pick \u2014 model sees clear edge | SA is 8-2 in last 10 games vs MIN's 5-5 | SA has a +13.9 point differential edge over MIN | SA averaging 124.2 PPG vs MIN's 115.2 | SA is 80% at home in their last home games"
+    "notes": "Strong 78% confidence pick \u2014 model sees clear edge | SA is 8-2 in last 10 games vs MIN's 5-5 | SA has a +13.9 point differential edge over MIN | SA averaging 124.2 PPG vs MIN's 115.2 | SA is 80% at home in their last home games",
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "SA"
   },
   {
     "id": "pred_1778063242482",
@@ -37,7 +45,11 @@
     "stat": "PTS",
     "pick": "OVER",
     "line": 1.5,
-    "projection": 8.0
+    "projection": 8.0,
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "OVER"
   },
   {
     "id": "pred_1778063345030",
@@ -49,7 +61,11 @@
     "stat": "PTS",
     "pick": "OVER",
     "line": 3.5,
-    "projection": 6.5
+    "projection": 6.5,
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "OVER"
   },
   {
     "id": "pred_1778063346937",
@@ -61,7 +77,11 @@
     "stat": "PTS",
     "pick": "OVER",
     "line": 4.5,
-    "projection": 8.7
+    "projection": 8.7,
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "OVER"
   },
   {
     "id": "pred_1778063348756",
@@ -73,7 +93,11 @@
     "stat": "REB",
     "pick": "OVER",
     "line": 3.5,
-    "projection": 7.1
+    "projection": 7.1,
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "OVER"
   },
   {
     "id": "pred_1778063351358",
@@ -85,7 +109,11 @@
     "stat": "PTS",
     "pick": "OVER",
     "line": 5.5,
-    "projection": 12.8
+    "projection": 12.8,
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "OVER"
   },
   {
     "id": "pred_1778134861840",
@@ -100,7 +128,11 @@
     "home_win_prob": 0.64,
     "away_win_prob": 0.36,
     "notes": "Moderate 63% confidence \u2014 close matchup with slight edge | DET has a +6.8 point differential edge over CLE | CLE actually scores more (125.1 vs 119.9) but model favors DET on other factors | DET is 100% at home in their last home games",
-    "resolved_at": "2026-05-08T12:14:22.621122+00:00"
+    "resolved_at": "2026-05-08T12:14:22.621122+00:00",
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "DET"
   },
   {
     "id": "pred_1778134874964",
@@ -115,7 +147,11 @@
     "home_win_prob": 0.5115,
     "away_win_prob": 0.4885,
     "notes": "Low 51% confidence \u2014 toss-up, bet small if at all | OKC has a +6.3 point differential edge over LAL | OKC averaging 121.1 PPG vs LAL's 116.2 | OKC is 83% at home in their last home games",
-    "resolved_at": "2026-05-08T12:14:19.945337+00:00"
+    "resolved_at": "2026-05-08T12:14:19.945337+00:00",
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "OKC"
   },
   {
     "id": "pred_1778141053921",
@@ -128,7 +164,11 @@
     "pick": "OVER",
     "line": 3.5,
     "projection": 13.5,
-    "resolved_at": "2026-05-08T12:14:38.425304+00:00"
+    "resolved_at": "2026-05-08T12:14:38.425304+00:00",
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "OVER"
   },
   {
     "id": "pred_1778141118563",
@@ -141,7 +181,11 @@
     "pick": "OVER",
     "line": 2.5,
     "projection": 7.9,
-    "resolved_at": "2026-05-10T14:35:10.548052+00:00"
+    "resolved_at": "2026-05-10T14:35:10.548052+00:00",
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "OVER"
   },
   {
     "id": "pred_1778141120636",
@@ -154,7 +198,11 @@
     "pick": "OVER",
     "line": 3.5,
     "projection": 7.2,
-    "resolved_at": "2026-05-08T12:15:00.216073+00:00"
+    "resolved_at": "2026-05-08T12:15:00.216073+00:00",
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "OVER"
   },
   {
     "id": "pred_1778141122395",
@@ -167,7 +215,11 @@
     "pick": "OVER",
     "line": 3.5,
     "projection": 6.1,
-    "resolved_at": "2026-05-10T14:38:11.159683+00:00"
+    "resolved_at": "2026-05-10T14:38:11.159683+00:00",
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "OVER"
   },
   {
     "id": "pred_1778141124783",
@@ -180,7 +232,11 @@
     "pick": "OVER",
     "line": 4.5,
     "projection": 7.7,
-    "resolved_at": "2026-05-10T14:37:55.943745+00:00"
+    "resolved_at": "2026-05-10T14:37:55.943745+00:00",
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "OVER"
   },
   {
     "id": "pred_1778141139075",
@@ -193,7 +249,11 @@
     "pick": "UNDER",
     "line": 17.5,
     "projection": 5.4,
-    "resolved_at": "2026-05-10T14:34:49.080536+00:00"
+    "resolved_at": "2026-05-10T14:34:49.080536+00:00",
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "UNDER"
   },
   {
     "id": "pred_1778141284855",
@@ -206,7 +266,11 @@
     "pick": "UNDER",
     "line": 28.5,
     "projection": 10.1,
-    "resolved_at": "2026-05-10T14:33:42.060609+00:00"
+    "resolved_at": "2026-05-10T14:33:42.060609+00:00",
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "UNDER"
   },
   {
     "id": "pred_1778141286835",
@@ -219,7 +283,11 @@
     "pick": "UNDER",
     "line": 16.5,
     "projection": 6.8,
-    "resolved_at": "2026-05-08T12:15:35.242505+00:00"
+    "resolved_at": "2026-05-08T12:15:35.242505+00:00",
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "UNDER"
   },
   {
     "id": "pred_1778141288806",
@@ -232,7 +300,11 @@
     "pick": "UNDER",
     "line": 18.5,
     "projection": 8.0,
-    "resolved_at": "2026-05-10T14:33:11.043514+00:00"
+    "resolved_at": "2026-05-10T14:33:11.043514+00:00",
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "UNDER"
   },
   {
     "id": "pred_1778141290943",
@@ -245,7 +317,11 @@
     "pick": "OVER",
     "line": 8.5,
     "projection": 13.3,
-    "resolved_at": "2026-05-08T12:15:21.122136+00:00"
+    "resolved_at": "2026-05-08T12:15:21.122136+00:00",
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "OVER"
   },
   {
     "id": "pred_1778244444534",
@@ -260,7 +336,11 @@
     "home_win_prob": 0.2889,
     "away_win_prob": 0.7111,
     "notes": "Strong 71% confidence pick \u2014 model sees clear edge | PHI actually scores more (118.0 vs 111.2) but model favors NY on other factors",
-    "resolved_at": "2026-05-10T14:28:40.451496+00:00"
+    "resolved_at": "2026-05-10T14:28:40.451496+00:00",
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "NY"
   },
   {
     "id": "pred_1778244501677",
@@ -275,7 +355,11 @@
     "home_win_prob": 0.5115,
     "away_win_prob": 0.4885,
     "notes": "Low 51% confidence \u2014 toss-up, bet small if at all | MIN has a +-13.9 point differential edge over SA | SA actually scores more (124.2 vs 115.2) but model favors MIN on other factors",
-    "resolved_at": "2026-05-10T14:28:41.678730+00:00"
+    "resolved_at": "2026-05-10T14:28:41.678730+00:00",
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "MIN"
   },
   {
     "id": "pred_1778321211492",
@@ -290,7 +374,11 @@
     "home_win_prob": 0.5115,
     "away_win_prob": 0.4885,
     "notes": "Low 51% confidence \u2014 toss-up, bet small if at all | CLE has a +-6.8 point differential edge over DET | CLE averaging 125.1 PPG vs DET's 119.9 | CLE is 100% at home in their last home games",
-    "resolved_at": "2026-05-10T14:28:28.291476+00:00"
+    "resolved_at": "2026-05-10T14:28:28.291476+00:00",
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "CLE"
   },
   {
     "id": "pred_1778321216337",
@@ -305,7 +393,11 @@
     "home_win_prob": 0.5115,
     "away_win_prob": 0.4885,
     "notes": "Low 51% confidence \u2014 toss-up, bet small if at all | LAL has a +-6.3 point differential edge over OKC | OKC actually scores more (121.1 vs 116.2) but model favors LAL on other factors | LAL is 83% at home in their last home games | LAL has 3-0 momentum in last 3 games",
-    "resolved_at": "2026-05-10T14:28:27.476315+00:00"
+    "resolved_at": "2026-05-10T14:28:27.476315+00:00",
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "LAL"
   },
   {
     "id": "pred_1778422721218",
@@ -319,7 +411,11 @@
     "confidence": "HIGH",
     "home_win_prob": 0.2889,
     "away_win_prob": 0.7111,
-    "notes": "Strong 71% confidence pick \u2014 model sees clear edge | PHI actually scores more (118.0 vs 111.2) but model favors NY on other factors"
+    "notes": "Strong 71% confidence pick \u2014 model sees clear edge | PHI actually scores more (118.0 vs 111.2) but model favors NY on other factors",
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "NY"
   },
   {
     "id": "pred_1778422722280",
@@ -333,7 +429,11 @@
     "confidence": "LOW",
     "home_win_prob": 0.5115,
     "away_win_prob": 0.4885,
-    "notes": "Low 51% confidence \u2014 toss-up, bet small if at all | MIN has a +-13.9 point differential edge over SA | SA actually scores more (124.2 vs 115.2) but model favors MIN on other factors"
+    "notes": "Low 51% confidence \u2014 toss-up, bet small if at all | MIN has a +-13.9 point differential edge over SA | SA actually scores more (124.2 vs 115.2) but model favors MIN on other factors",
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "MIN"
   },
   {
     "id": "pred_1778425928467",
@@ -345,7 +445,11 @@
     "stat": "PTS",
     "pick": "OVER",
     "line": 8.5,
-    "projection": 17.3
+    "projection": 17.3,
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "OVER"
   },
   {
     "id": "pred_1778425930077",
@@ -357,7 +461,11 @@
     "stat": "PTS",
     "pick": "OVER",
     "line": 11.5,
-    "projection": 18.2
+    "projection": 18.2,
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "OVER"
   },
   {
     "id": "pred_1778425931868",
@@ -369,7 +477,11 @@
     "stat": "PTS",
     "pick": "UNDER",
     "line": 26.5,
-    "projection": 17.0
+    "projection": 17.0,
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "UNDER"
   },
   {
     "id": "pred_1778425933950",
@@ -381,7 +493,11 @@
     "stat": "PTS",
     "pick": "UNDER",
     "line": 8.5,
-    "projection": 5.7
+    "projection": 5.7,
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "UNDER"
   },
   {
     "id": "pred_1778425935468",
@@ -393,7 +509,11 @@
     "stat": "REB",
     "pick": "UNDER",
     "line": 9.5,
-    "projection": 6.7
+    "projection": 6.7,
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "UNDER"
   },
   {
     "id": "pred_1778425937588",
@@ -405,7 +525,11 @@
     "stat": "AST",
     "pick": "OVER",
     "line": 4.5,
-    "projection": 5.8
+    "projection": 5.8,
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "OVER"
   },
   {
     "id": "pred_1778425938882",
@@ -417,7 +541,11 @@
     "stat": "REB",
     "pick": "UNDER",
     "line": 11.5,
-    "projection": 8.3
+    "projection": 8.3,
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "UNDER"
   },
   {
     "id": "pred_1778425940858",
@@ -429,7 +557,11 @@
     "stat": "PTS",
     "pick": "UNDER",
     "line": 19.5,
-    "projection": 14.6
+    "projection": 14.6,
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "UNDER"
   },
   {
     "id": "pred_1778425943131",
@@ -441,7 +573,11 @@
     "stat": "REB",
     "pick": "OVER",
     "line": 4.5,
-    "projection": 5.5
+    "projection": 5.5,
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "OVER"
   },
   {
     "id": "pred_1778425945443",
@@ -453,7 +589,11 @@
     "stat": "PTS",
     "pick": "OVER",
     "line": 10.5,
-    "projection": 12.7
+    "projection": 12.7,
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "OVER"
   },
   {
     "id": "pred_1778442230800",
@@ -467,6 +607,10 @@
     "confidence": "LOW",
     "home_win_prob": 0.5115,
     "away_win_prob": 0.4885,
-    "notes": "Low 51% confidence \u2014 toss-up, bet small if at all | MIN has a +-13.9 point differential edge over SA | SA actually scores more (124.2 vs 115.2) but model favors MIN on other factors"
+    "notes": "Low 51% confidence \u2014 toss-up, bet small if at all | MIN has a +-13.9 point differential edge over SA | SA actually scores more (124.2 vs 115.2) but model favors MIN on other factors",
+    "stake": 0,
+    "odds_decimal": null,
+    "profit_loss": 0,
+    "side": "MIN"
   }
 ]

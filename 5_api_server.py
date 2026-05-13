@@ -431,8 +431,20 @@ async def top_picks(date_str: Optional[str] = None):
     df = state.player_log_cache
     players = df[df["PLAYER_TEAM"].isin(active)]["PLAYER_NAME"].unique()
 
-    # Try Vegas lines (optional)
-    vegas_lines = {}
+    # Try Vegas lines (optional) — pulls player props for up to 5 upcoming games.
+    # Each game costs 3 Odds-API requests (one per market). Cached 30 min.
+    vegas_lines = {}      # (player_lower, stat_key) -> line
+    vegas_prices = {}     # (player_lower, stat_key) -> {"over_prices": {bm: american}, "under_prices": {...}}
+
+    def _amer_to_dec(am):
+        try:
+            n = float(am)
+        except (TypeError, ValueError):
+            return None
+        if n == 0:
+            return None
+        return round((n / 100 + 1) if n > 0 else (100 / abs(n) + 1), 2)
+
     try:
         import importlib.util
         spec = importlib.util.spec_from_file_location("odds_mod", "10_odds_integration.py")
@@ -441,11 +453,27 @@ async def top_picks(date_str: Optional[str] = None):
         for og in odds_games[:5]:
             try:
                 props = await odds_mod.fetch_player_props(og["game_id"])
-                for stat_key, plist in props.get("props",{}).items():
+                for stat_key, plist in props.get("props", {}).items():
                     for pname, info in plist.items():
-                        vegas_lines[(pname.lower(), stat_key)] = info["line"]
-            except: continue
-    except: pass
+                        key = (pname.lower(), stat_key)
+                        vegas_lines[key] = info["line"]
+                        # Pick best (highest) price per side as the displayed odds,
+                        # mirroring how a bettor would shop the line.
+                        over_prices  = info.get("over", {})  or {}
+                        under_prices = info.get("under", {}) or {}
+                        best_over_am  = max(over_prices.values(),  key=lambda x: x or -9999) if over_prices  else None
+                        best_under_am = max(under_prices.values(), key=lambda x: x or -9999) if under_prices else None
+                        vegas_prices[key] = {
+                            "over_decimal":  _amer_to_dec(best_over_am),
+                            "under_decimal": _amer_to_dec(best_under_am),
+                            "over_american":  best_over_am,
+                            "under_american": best_under_am,
+                            "bookmakers": sorted(set(list(over_prices.keys()) + list(under_prices.keys()))),
+                        }
+            except Exception:
+                continue
+    except Exception:
+        pass
 
     picks = []
     for name in players:
@@ -533,6 +561,13 @@ async def top_picks(date_str: Optional[str] = None):
                 "form": {"avg_last_5": round(avg5,1), "avg_last_10": round(avg10,1),
                          "trending": "up" if form_trend>0.05 else "down" if form_trend<-0.05 else "flat",
                          "consistency": round(consistency*100)},
+                # Real Vegas prices when available; null otherwise. Frontend
+                # uses these to populate the bet-logging modal.
+                "odds": vegas_prices.get((name.lower(), stat_key), {
+                    "over_decimal": None, "under_decimal": None,
+                    "over_american": None, "under_american": None,
+                    "bookmakers": [],
+                }),
             })
     picks.sort(key=lambda p: (abs(p.get("edge_pct") or 0), p["confidence"], p["form"]["consistency"]), reverse=True)
     return {"date": game_date, "games": len(games),
@@ -628,6 +663,26 @@ class HistoryEntry(BaseModel):
     line: Optional[float] = None
     projection: Optional[float] = None
     notes: Optional[str] = None
+    # Betting fields ───────────────────────────────────────────────────────
+    side: Optional[str] = None             # e.g. "BOS", "NYK", "OVER", "UNDER"
+    odds_decimal: Optional[float] = None   # 1.85, 2.04, etc.
+    stake: Optional[float] = None          # default $100, set in /history/log
+
+
+def compute_pl(record: dict) -> float:
+    """Profit/loss for a resolved record. Pending → 0."""
+    if record.get("result") not in ("WIN", "LOSS"):
+        return 0.0
+    stake = float(record.get("stake") or 0)
+    if stake <= 0:
+        return 0.0
+    odds = record.get("odds_decimal")
+    if record["result"] == "LOSS":
+        return -stake
+    # WIN
+    if odds is None or odds <= 1:
+        return 0.0  # no odds recorded → can't compute profit
+    return round(stake * (odds - 1), 2)
 
 
 class ResultUpdate(BaseModel):
@@ -640,11 +695,17 @@ class ResultUpdate(BaseModel):
 async def log_prediction(entry: HistoryEntry):
     """Log a prediction to track later."""
     records = load_history()
+    payload = entry.dict(exclude_none=True)
+    # Default $100 stake when odds were captured at log time. Without odds we
+    # can't compute P/L on a win, so stake stays 0 unless caller set it.
+    if payload.get("odds_decimal") and not payload.get("stake"):
+        payload["stake"] = 100.0
     new_record = {
         "id": f"pred_{int(datetime.now().timestamp() * 1000)}",
         "logged_at": datetime.now(timezone.utc).isoformat(),
         "result": "PENDING",
-        **entry.dict(exclude_none=True),
+        "profit_loss": 0.0,
+        **payload,
     }
     records.insert(0, new_record)
     save_history(records[:500])  # keep last 500
@@ -690,6 +751,21 @@ async def get_history(filter_type: Optional[str] = None, limit: int = 100):
             "win_rate": round(win_rate, 1),
             "streak": streak,
             "streak_type": streak_type,
+            # Betting aggregates (only entries with recorded stake count)
+            "total_staked":   round(sum(float(r.get("stake") or 0)
+                                        for r in completed), 2),
+            "total_profit":   round(sum(float(r.get("profit_loss") or 0)
+                                        for r in completed), 2),
+            "pending_at_risk": round(sum(float(r.get("stake") or 0)
+                                         for r in records
+                                         if r.get("result") == "PENDING"), 2),
+            "roi_pct": round(
+                (sum(float(r.get("profit_loss") or 0) for r in completed)
+                 / sum(float(r.get("stake") or 0) for r in completed) * 100)
+                if sum(float(r.get("stake") or 0) for r in completed) > 0
+                else 0,
+                2,
+            ),
         },
         "records": records[:limit],
     }
@@ -708,6 +784,7 @@ async def update_result(record_id: str, update: ResultUpdate):
                 r["actual_score"] = update.actual_score
             if update.actual_value is not None:
                 r["actual_value"] = update.actual_value
+            r["profit_loss"] = compute_pl(r)
             found = True
             break
 
@@ -769,11 +846,14 @@ async def auto_update_history():
             key = (r.get("home_team"), r.get("away_team"))
             if key in final_games:
                 actual = final_games[key]
-                predicted = r.get("predicted_winner")
-                r["result"] = "WIN" if predicted == actual["actual_winner"] else "LOSS"
+                # Bet resolves based on the user's chosen side (manual-choice
+                # at log time); fall back to predicted_winner for legacy rows.
+                bet_side = r.get("side") or r.get("predicted_winner")
+                r["result"] = "WIN" if bet_side == actual["actual_winner"] else "LOSS"
                 r["actual_score"] = actual["score"]
                 r["actual_winner"] = actual["actual_winner"]
                 r["resolved_at"] = datetime.now(timezone.utc).isoformat()
+                r["profit_loss"] = compute_pl(r)
                 updated += 1
 
     save_history(records)
