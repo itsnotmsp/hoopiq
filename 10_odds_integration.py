@@ -39,9 +39,11 @@ BASE_URL = "https://api.the-odds-api.com/v4"
 SPORT    = "basketball_nba"
 
 # Cache TTLs (seconds)
-GAMES_TTL    = 300      # 5 min for game odds
-PROPS_TTL    = 300      # 5 min for player props
-LIVE_TTL     = 60       # 1 min for live odds
+# Trade-off: longer TTL = lower API spend, slower reaction to line moves.
+# Pre-game lines settle hours before tipoff so 10–90 min staleness is fine.
+GAMES_TTL    = 600      # 10 min for game odds (was 5)
+PROPS_TTL    = 5400     # 90 min for player props (was 5) — biggest quota sink
+LIVE_TTL     = 60       # 1 min for live odds (unchanged — lines move fast in-game)
 
 # Markets
 GAME_MARKETS  = "h2h,spreads,totals"

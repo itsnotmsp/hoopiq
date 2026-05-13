@@ -451,10 +451,13 @@ nav{display:flex;gap:2px}
   <div class="actions">
     <button class="btn-primary" onclick="autoUpdateResults()">⚡ Auto-update finished games</button>
     <button class="btn-secondary" onclick="loadHistory()">↻ Refresh</button>
+    <button class="btn-secondary" onclick="exportHistoryCsv()">⤓ Export CSV</button>
     <button class="btn-secondary active" onclick="filterHistory('all',this)" id="hf-all">All</button>
     <button class="btn-secondary" onclick="filterHistory('PENDING',this)" id="hf-pending">Pending</button>
     <button class="btn-secondary" onclick="filterHistory('WIN',this)" id="hf-win">Wins</button>
     <button class="btn-secondary" onclick="filterHistory('LOSS',this)" id="hf-loss">Losses</button>
+    <button class="btn-secondary" onclick="filterHistory('biggest_wins',this)" id="hf-bigwin">💰 Biggest wins</button>
+    <button class="btn-secondary" onclick="filterHistory('biggest_losses',this)" id="hf-bigloss">📉 Biggest losses</button>
     <button class="btn-secondary" onclick="filterHistory('game',this,'type')" id="hf-game">Games</button>
     <button class="btn-secondary" onclick="filterHistory('prop',this,'type')" id="hf-prop">Props</button>
   </div>
@@ -1265,6 +1268,12 @@ function renderHistory() {
     filtered = filtered.filter(r => r.result === historyFilter);
   } else if(historyFilter === "game" || historyFilter === "prop") {
     filtered = filtered.filter(r => r.type === historyFilter);
+  } else if(historyFilter === "biggest_wins") {
+    filtered = filtered.filter(r => r.result === "WIN" && (r.profit_loss || 0) > 0)
+                       .slice().sort((a,b) => (b.profit_loss || 0) - (a.profit_loss || 0));
+  } else if(historyFilter === "biggest_losses") {
+    filtered = filtered.filter(r => r.result === "LOSS" && (r.profit_loss || 0) < 0)
+                       .slice().sort((a,b) => (a.profit_loss || 0) - (b.profit_loss || 0));
   }
 
   if(!filtered.length) {
@@ -1276,37 +1285,51 @@ function renderHistory() {
     const result = r.result || "PENDING";
     const cls = result === "WIN" ? "win" : result === "LOSS" ? "loss" : "pending";
     const date = r.logged_at ? new Date(r.logged_at).toLocaleString() : "";
+
+    // Prominent side badge — what the user actually backed.
+    const side = r.side || r.pick || (r.type === "game" ? r.predicted_winner : null);
+    let sideClass = "";
+    if (side === "OVER")  sideClass = "over";
+    if (side === "UNDER") sideClass = "under";
+    const sideBadge = side ? `<span class="h-side-badge ${sideClass}">${side}</span>` : "";
+
+    // Title line — cleaner, no embedded side info (the badge handles that)
     let title;
     if(r.type === "game") {
-      const sideStr = r.side ? ` · betting ${r.side}` : "";
-      title = `${r.matchup || ""} → model: ${r.predicted_winner}${sideStr}`;
+      title = `${sideBadge}${r.matchup || ""}`;
     } else {
-      const teamPrefix = r.matchup ? `[${r.matchup}] ` : "";
-      title = `${teamPrefix}${r.player} ${r.stat} ${r.side || r.pick || ""} ${r.line || ""}`;
+      const teamPrefix = r.matchup ? `<span style="color:var(--muted);font-weight:400">[${r.matchup}]</span> ` : "";
+      const stat_word = ({PTS:"PTS",REB:"REB",AST:"AST"})[r.stat] || r.stat || "";
+      title = `${sideBadge}${teamPrefix}${r.player || ""} ${stat_word} ${r.line || ""}`;
     }
     const sub = r.type === "game"
-      ? `${(r.home_win_prob*100).toFixed(0)}%/${(r.away_win_prob*100).toFixed(0)}% · ${r.confidence || ""}`
-      : `Projection: ${r.projection || "—"} · vs line ${r.line || "—"}`;
+      ? `Model: <b>${r.predicted_winner}</b> @ ${(r.home_win_prob*100).toFixed(0)}%/${(r.away_win_prob*100).toFixed(0)}% · ${r.confidence || ""}`
+      : `Projection: <b>${r.projection || "—"}</b> · vs line <b>${r.line || "—"}</b>`;
 
-    // Betting strip: stake + odds + P/L (only shown when stake recorded)
+    // Betting strip
     let betStrip = "";
     if (r.stake && r.stake > 0) {
       const odds = r.odds_decimal ? r.odds_decimal.toFixed(2) : "—";
       const pl = Number(r.profit_loss || 0);
-      let plHtml = "—";
+      let plHtml;
       if (result === "WIN") {
-        plHtml = `<span style="color:var(--green);font-weight:600">+$${pl.toFixed(2)}</span>`;
+        plHtml = `<span class="pl-win">+$${pl.toFixed(2)}</span>`;
       } else if (result === "LOSS") {
-        plHtml = `<span style="color:var(--red);font-weight:600">-$${Math.abs(pl).toFixed(2)}</span>`;
+        plHtml = `<span class="pl-loss">-$${Math.abs(pl).toFixed(2)}</span>`;
       } else if (r.odds_decimal) {
         const potential = r.stake * (r.odds_decimal - 1);
-        plHtml = `<span style="color:var(--muted)">if win: +$${potential.toFixed(2)}</span>`;
+        plHtml = `<span class="pl-pending">if win: +$${potential.toFixed(2)}</span>`;
+      } else {
+        plHtml = `<span class="pl-pending">no odds</span>`;
       }
-      betStrip = `<div class="h-sub" style="margin-top:.3rem;font-family:'DM Mono',monospace;font-size:.78rem">
-        $${r.stake} @ ${odds} → ${plHtml}
+      betStrip = `<div class="h-bet-strip">
+        <span class="stake">$${r.stake}</span>
+        <span>@</span>
+        <span class="stake">${odds}</span>
+        ${plHtml}
       </div>`;
     } else {
-      betStrip = `<div class="h-sub" style="margin-top:.3rem;font-size:.75rem;color:var(--muted);opacity:.7">(no stake recorded)</div>`;
+      betStrip = `<div class="h-bet-strip empty">no stake recorded</div>`;
     }
 
     let reasonHtml = "";
@@ -1343,6 +1366,39 @@ function renderHistory() {
       <div class="h-actions">${actions}</div>
     </div>`;
   }).join("");
+}
+
+// ─── CSV EXPORT ─────────────────────────────────────────────────────────────
+function exportHistoryCsv() {
+  if (!historyData.length) {
+    alert("No history to export yet.");
+    return;
+  }
+  const cols = [
+    "logged_at","resolved_at","type","matchup","predicted_winner","player","stat",
+    "line","projection","side","odds_decimal","stake","result","actual_score",
+    "actual_value","profit_loss","confidence","notes",
+  ];
+  // Standard CSV escaping: wrap in quotes if value contains comma/quote/newline;
+  // double-up internal quotes.
+  const esc = (v) => {
+    if (v == null) return "";
+    const s = String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const rows = [cols.join(",")];
+  for (const r of historyData) {
+    rows.push(cols.map(c => esc(r[c])).join(","));
+  }
+  const blob = new Blob([rows.join("\n")], { type: "text/csv;charset=utf-8" });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href = url;
+  a.download = `hoopiq_history_${new Date().toISOString().slice(0,10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 async function markResult(id, result) {
@@ -1605,6 +1661,22 @@ init();
   .bet-submit:disabled{opacity:.4;cursor:not-allowed}
   .bet-cancel{padding:.85rem 1.2rem;background:var(--s2);color:var(--text);border:1px solid var(--b2);
               border-radius:var(--radius-sm);cursor:pointer;font-size:.95rem}
+  /* History row enhancements */
+  .h-side-badge{display:inline-flex;align-items:center;gap:.3rem;padding:.2rem .55rem;
+                background:rgba(249,115,22,.12);border:1px solid rgba(249,115,22,.4);
+                border-radius:var(--radius-xs);font-family:'DM Mono',monospace;font-size:.7rem;
+                font-weight:600;color:var(--accent);letter-spacing:.04em;margin-right:.5rem;
+                text-transform:uppercase}
+  .h-side-badge.over  {background:rgba(34,197,94,.10);border-color:rgba(34,197,94,.4);color:var(--green)}
+  .h-side-badge.under {background:rgba(239,68,68,.10);border-color:rgba(239,68,68,.4);color:var(--red)}
+  .h-bet-strip{display:flex;align-items:center;gap:.7rem;margin-top:.4rem;padding:.4rem .65rem;
+               background:var(--s2);border-radius:var(--radius-xs);font-family:'DM Mono',monospace;
+               font-size:.78rem;color:var(--muted)}
+  .h-bet-strip .stake{color:var(--text)}
+  .h-bet-strip .pl-win{color:var(--green);font-weight:600;margin-left:auto}
+  .h-bet-strip .pl-loss{color:var(--red);font-weight:600;margin-left:auto}
+  .h-bet-strip .pl-pending{color:var(--accent2);margin-left:auto;opacity:.85}
+  .h-bet-strip.empty{color:var(--muted);opacity:.5;font-size:.7rem;background:transparent;padding:0;margin-top:.25rem}
 </style>
 <div class="modal-overlay" id="bet-modal">
   <div class="bet-modal-box">
