@@ -632,7 +632,21 @@ async def odds_usage():
 
 
 # ─── History Tracking ────────────────────────────────────────────────────
-HISTORY_PATH = DATA_DIR / "predictions_log.json"
+# History is stored at HOOPIQ_HISTORY_DIR if set (used in production for a
+# Railway Volume mounted at /data so predictions survive redeploys), otherwise
+# alongside the bundled data files. Parquet/model files stay in DATA_DIR
+# (they're read-only and ship with the container).
+HISTORY_DIR  = Path(os.environ.get("HOOPIQ_HISTORY_DIR", str(DATA_DIR)))
+HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+HISTORY_PATH = HISTORY_DIR / "predictions_log.json"
+
+# Seed the volume on first run: if the volume's history file is missing but
+# the bundled data/predictions_log.json exists (from git), copy it across so
+# you don't start from zero after enabling the volume.
+_BUNDLED = DATA_DIR / "predictions_log.json"
+if not HISTORY_PATH.exists() and _BUNDLED.exists() and HISTORY_PATH != _BUNDLED:
+    HISTORY_PATH.write_text(_BUNDLED.read_text())
+    print(f"[history] Seeded {HISTORY_PATH} from bundled {_BUNDLED}")
 
 
 def load_history():
