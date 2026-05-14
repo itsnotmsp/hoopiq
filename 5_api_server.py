@@ -548,6 +548,19 @@ async def top_picks(date_str: Optional[str] = None):
                              "Moderate confidence" if confidence>=50 else
                              "Low confidence — bet small")
 
+            # High-confidence flag: pick only fires when the model has a
+            # real edge AND the player is reliable. Combines:
+            #  • model confidence ≥ 65
+            #  • |edge_pct| ≥ 15 (real gap to Vegas, not 2% noise)
+            #  • consistency ≥ 65 (player hits their average reliably)
+            # Bets matching all three should hit higher than the open set.
+            cons_pct = round(consistency * 100)
+            high_conf = (
+                confidence >= 65
+                and (edge_pct is not None and abs(edge_pct) >= 15)
+                and cons_pct >= 65
+            )
+
             picks.append({
                 "player": name, "team": team, "opponent": opp, "home": is_home,
                 "stat": stat, "stat_label": stat_word,
@@ -556,11 +569,12 @@ async def top_picks(date_str: Optional[str] = None):
                 "edge_pct": round(edge_pct,1) if vegas_line else None,
                 "pick": pick_side, "recommendation": rec, "confidence": round(confidence),
                 "confidence_label": confidence_word,
+                "high_confidence": high_conf,
                 "simple_explanation": simple,
                 "reasons": reasons[:5],
                 "form": {"avg_last_5": round(avg5,1), "avg_last_10": round(avg10,1),
                          "trending": "up" if form_trend>0.05 else "down" if form_trend<-0.05 else "flat",
-                         "consistency": round(consistency*100)},
+                         "consistency": cons_pct},
                 # Real Vegas prices when available; null otherwise. Frontend
                 # uses these to populate the bet-logging modal.
                 "odds": vegas_prices.get((name.lower(), stat_key), {
@@ -681,6 +695,7 @@ class HistoryEntry(BaseModel):
     side: Optional[str] = None             # e.g. "BOS", "NYK", "OVER", "UNDER"
     odds_decimal: Optional[float] = None   # 1.85, 2.04, etc.
     stake: Optional[float] = None          # default $100, set in /history/log
+    closing_decimal: Optional[float] = None  # captured automatically at game start
 
 
 def compute_pl(record: dict) -> float:
@@ -756,6 +771,27 @@ async def get_history(filter_type: Optional[str] = None, limit: int = 100):
         else:
             break
 
+    # CLV (closing-line value) — only entries where both opening (your) odds
+    # and closing odds were captured. CLV per bet, in %:
+    #   100 * (closing_decimal / opening_decimal - 1) for back side
+    # We average across all bets that have both fields. Positive CLV means
+    # you consistently beat the market — strongest long-term profitability
+    # indicator known, more meaningful than win rate on small samples.
+    clv_records = [r for r in records
+                   if r.get("odds_decimal") and r.get("closing_decimal")
+                   and r["odds_decimal"] > 1 and r["closing_decimal"] > 1]
+    if clv_records:
+        clv_pcts = [
+            100 * (r["closing_decimal"] / r["odds_decimal"] - 1)
+            for r in clv_records
+        ]
+        avg_clv = sum(clv_pcts) / len(clv_pcts)
+        clv_beats = sum(1 for c in clv_pcts if c > 0)
+        clv_beat_rate = round(100 * clv_beats / len(clv_pcts), 1)
+    else:
+        avg_clv = 0.0
+        clv_beat_rate = 0.0
+
     return {
         "stats": {
             "total": len(records),
@@ -780,6 +816,10 @@ async def get_history(filter_type: Optional[str] = None, limit: int = 100):
                 else 0,
                 2,
             ),
+            # Closing-line value
+            "clv_pct": round(avg_clv, 2),
+            "clv_beat_rate": clv_beat_rate,
+            "clv_sample": len(clv_records),
         },
         "records": records[:limit],
     }
@@ -887,6 +927,99 @@ async def delete_record(record_id: str):
         raise HTTPException(404, "Record not found")
     save_history(new_records)
     return {"deleted": True}
+
+
+def _amer_to_dec_safe(am):
+    """American → decimal odds. Returns None on bad input."""
+    try:
+        n = float(am)
+    except (TypeError, ValueError):
+        return None
+    if n == 0:
+        return None
+    return round((n / 100 + 1) if n > 0 else (100 / abs(n) + 1), 4)
+
+
+@app.post("/history/capture_closing_lines")
+async def capture_closing_lines():
+    """
+    Capture the current sportsbook line as the 'closing line' for any pending
+    bet that doesn't have one yet. Intended to be called shortly before / at
+    tipoff so the line we record is genuinely the close.
+
+    Why this matters: CLV (closing-line value = how much you beat the close
+    by) is the single most predictive measure of long-term betting skill.
+    A bettor who consistently gets +CLV will profit even with a sub-55% hit
+    rate; a bettor who consistently gives up -CLV will lose even at 60%+.
+    """
+    records = load_history()
+    pending_needing_clv = [
+        r for r in records
+        if r.get("result") == "PENDING"
+        and r.get("odds_decimal")
+        and not r.get("closing_decimal")
+    ]
+    if not pending_needing_clv:
+        return {"updated": 0, "message": "No pending bets need a closing line."}
+
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("odds_mod", "10_odds_integration.py")
+        odds_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(odds_mod)
+        odds_games = await odds_mod.fetch_game_odds()
+    except Exception as e:
+        raise HTTPException(503, f"Odds module failed: {e}")
+
+    # Build a fast lookup: full team name → odds payload for the game it's in.
+    by_team = {}
+    for og in odds_games:
+        by_team[og["home_team"].lower()] = og
+        by_team[og["away_team"].lower()] = og
+
+    # Map common abbreviations to Odds API full names (mirrors backend ODDS_TEAM_NAMES)
+    ODDS_TEAM_NAMES = {
+        "ATL":"Atlanta Hawks","BOS":"Boston Celtics","BKN":"Brooklyn Nets","BRK":"Brooklyn Nets",
+        "CHA":"Charlotte Hornets","CHO":"Charlotte Hornets","CHI":"Chicago Bulls",
+        "CLE":"Cleveland Cavaliers","DAL":"Dallas Mavericks","DEN":"Denver Nuggets",
+        "DET":"Detroit Pistons","GSW":"Golden State Warriors","GS":"Golden State Warriors",
+        "HOU":"Houston Rockets","IND":"Indiana Pacers","LAC":"Los Angeles Clippers",
+        "LAL":"Los Angeles Lakers","MEM":"Memphis Grizzlies","MIA":"Miami Heat",
+        "MIL":"Milwaukee Bucks","MIN":"Minnesota Timberwolves",
+        "NOP":"New Orleans Pelicans","NO":"New Orleans Pelicans",
+        "NYK":"New York Knicks","NY":"New York Knicks",
+        "OKC":"Oklahoma City Thunder","ORL":"Orlando Magic","PHI":"Philadelphia 76ers",
+        "PHX":"Phoenix Suns","PHO":"Phoenix Suns","POR":"Portland Trail Blazers",
+        "SAC":"Sacramento Kings","SAS":"San Antonio Spurs","SA":"San Antonio Spurs",
+        "TOR":"Toronto Raptors","UTA":"Utah Jazz","UTAH":"Utah Jazz",
+        "WAS":"Washington Wizards","WSH":"Washington Wizards",
+    }
+
+    updated = 0
+    for r in pending_needing_clv:
+        # Only game-type bets get auto-captured for now. Props CLV would need
+        # a player-props API call per bet, which we don't want to spend quota
+        # on; props CLV can be added manually later if needed.
+        if r.get("type") != "game":
+            continue
+        side_abbr = r.get("side")
+        if not side_abbr:
+            continue
+        side_full = ODDS_TEAM_NAMES.get(side_abbr, side_abbr)
+        og = by_team.get(side_full.lower())
+        if not og:
+            continue
+        ml_dict = og["moneyline"].get(side_full) or {}
+        ml_consensus = ml_dict.get("consensus")
+        closing_dec = _amer_to_dec_safe(ml_consensus)
+        if closing_dec:
+            r["closing_decimal"] = closing_dec
+            r["closing_captured_at"] = datetime.now(timezone.utc).isoformat()
+            updated += 1
+
+    if updated:
+        save_history(records)
+    return {"updated": updated, "candidates": len(pending_needing_clv)}
 
 
 # ─── Game Prediction with Reasoning ──────────────────────────────────────

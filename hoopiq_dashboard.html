@@ -375,6 +375,7 @@ nav{display:flex;gap:2px}
     <div class="actions">
       <button class="btn-primary" onclick="loadTop10()">⚡ Refresh picks</button>
       <button class="btn-secondary" onclick="showPickFilter('all',this)" id="pf-all">All</button>
+      <button class="btn-secondary" onclick="showPickFilter('HIGH_CONF',this)" id="pf-hc" title="Confidence ≥65, edge ≥15%, consistency ≥65%. Smaller list, higher hit rate.">🎯 High confidence</button>
       <button class="btn-secondary" onclick="showPickFilter('STRONG',this)" id="pf-strong">🔥 Strong only</button>
       <button class="btn-secondary" onclick="showPickFilter('PTS',this)" id="pf-pts">Points</button>
       <button class="btn-secondary" onclick="showPickFilter('REB',this)" id="pf-reb">Rebounds</button>
@@ -445,11 +446,13 @@ nav{display:flex;gap:2px}
     <div class="mc"><div class="mc-lbl">Total predictions</div><div class="mc-val" id="h-total">—</div></div>
     <div class="mc"><div class="mc-lbl">Win rate</div><div class="mc-val" id="h-winrate" style="color:var(--accent)">—</div><div class="mc-sub"><span id="h-wins">0</span>W / <span id="h-losses">0</span>L</div></div>
     <div class="mc"><div class="mc-lbl">Total P/L</div><div class="mc-val" id="h-pl">—</div><div class="mc-sub"><span id="h-roi">—</span> ROI · $<span id="h-staked">0</span> staked</div></div>
+    <div class="mc" title="Closing-line value — gap between your bet odds and where the line settled. Sustained positive CLV is the strongest indicator of long-term profitability."><div class="mc-lbl">CLV</div><div class="mc-val" id="h-clv">—</div><div class="mc-sub"><span id="h-clv-beat">—</span> beat close · <span id="h-clv-sample">0</span> bets</div></div>
     <div class="mc"><div class="mc-lbl">Pending</div><div class="mc-val" id="h-pending" style="color:var(--accent2)">—</div><div class="mc-sub">$<span id="h-at-risk">0</span> at risk</div></div>
     <div class="mc"><div class="mc-lbl">Streak</div><div class="mc-val" id="h-streak">—</div><div class="mc-sub" id="h-streak-type">—</div></div>
   </div>
   <div class="actions">
     <button class="btn-primary" onclick="autoUpdateResults()">⚡ Auto-update finished games</button>
+    <button class="btn-secondary" onclick="captureClosingLines()" title="Snapshot current sportsbook lines as 'closing' for pending bets. Run shortly before tipoff for accurate CLV.">📌 Capture closing lines</button>
     <button class="btn-secondary" onclick="loadHistory()">↻ Refresh</button>
     <button class="btn-secondary" onclick="exportHistoryCsv()">⤓ Export CSV</button>
     <button class="btn-secondary active" onclick="filterHistory('all',this)" id="hf-all">All</button>
@@ -965,11 +968,15 @@ function showPickFilter(f, btn) {
 
 function renderTop10() {
   let picks = top10Data;
-  if(top10Filter === "STRONG") picks = picks.filter(p=>p.recommendation.includes("STRONG"));
+  if(top10Filter === "HIGH_CONF") picks = picks.filter(p=>p.high_confidence);
+  else if(top10Filter === "STRONG") picks = picks.filter(p=>p.recommendation.includes("STRONG"));
   else if(["PTS","REB","AST"].includes(top10Filter)) picks = picks.filter(p=>p.stat===top10Filter);
 
   if(!picks.length) {
-    document.getElementById("top10-list").innerHTML='<div class="empty">No picks match this filter</div>';
+    const msg = top10Filter === "HIGH_CONF"
+      ? 'No picks meet the high-confidence bar today.<br><small>Bar: confidence ≥65, edge ≥15%, consistency ≥65%.<br>Skip the slate — that\'s exactly when Option A protects you.</small>'
+      : "No picks match this filter";
+    document.getElementById("top10-list").innerHTML='<div class="empty">'+msg+'</div>';
     return;
   }
 
@@ -1014,6 +1021,7 @@ function renderTop10() {
         <div class="pick-simple-header">
           <div class="pick-player">${p.player}</div>
           <span class="pick-rec-badge ${recClass}">${rec}</span>
+          ${p.high_confidence ? '<span class="pick-rec-badge" style="background:rgba(34,197,94,.15);color:var(--green);border:1px solid rgba(34,197,94,.4);margin-left:.4rem" title="High-confidence pick: model confidence ≥65, edge ≥15%, consistency ≥65%">🎯 HIGH CONF</span>' : ''}
         </div>
         <div class="pick-simple-text">${simple}</div>
         <div class="pick-simple-meta">
@@ -1227,6 +1235,34 @@ async function autoUpdateResults() {
   }
 }
 
+// Snapshot the *current* sportsbook line as the "closing" line for every
+// pending bet that lacks one. Call this shortly before tipoff for it to
+// genuinely reflect the closing market price. Run it again later and it's
+// a no-op for bets already captured.
+async function captureClosingLines() {
+  const btn = event.target;
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Capturing...";
+  try {
+    const r = await apiPost("/history/capture_closing_lines", {});
+    btn.disabled = false;
+    btn.textContent = orig;
+    if (r.updated > 0) {
+      alert(`📌 Captured closing lines for ${r.updated} pending bet${r.updated>1?"s":""}.\n\nCLV will update once these games resolve.`);
+    } else if (r.message) {
+      alert(r.message);
+    } else {
+      alert("No matching odds found for pending bets right now. Try again closer to tipoff.");
+    }
+    loadHistory();
+  } catch(e) {
+    btn.disabled = false;
+    btn.textContent = orig;
+    alert("Could not capture closing lines: " + e.message);
+  }
+}
+
 async function loadHistory() {
   document.getElementById("history-list").innerHTML='<div class="spin"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>';
   try {
@@ -1249,6 +1285,19 @@ async function loadHistory() {
     document.getElementById("h-roi").textContent = (s.roi_pct >= 0 ? "+" : "") + (s.roi_pct || 0) + "%";
     document.getElementById("h-staked").textContent  = (s.total_staked || 0).toFixed(2);
     document.getElementById("h-at-risk").textContent = (s.pending_at_risk || 0).toFixed(2);
+
+    // CLV — sustained positive CLV is the strongest profitability signal we have.
+    const clv = Number(s.clv_pct || 0);
+    const clvEl = document.getElementById("h-clv");
+    if (s.clv_sample && s.clv_sample > 0) {
+      clvEl.textContent = (clv >= 0 ? "+" : "") + clv.toFixed(2) + "%";
+      clvEl.style.color = clv > 0.5 ? "var(--green)" : clv < -0.5 ? "var(--red)" : "var(--muted)";
+    } else {
+      clvEl.textContent = "—";
+      clvEl.style.color = "var(--muted)";
+    }
+    document.getElementById("h-clv-beat").textContent = (s.clv_beat_rate || 0) + "%";
+    document.getElementById("h-clv-sample").textContent = s.clv_sample || 0;
     renderHistory();
   } catch(e) {
     document.getElementById("history-list").innerHTML = `<div class="empty">Could not load history<br><small>${e.message}</small></div>`;
@@ -1322,11 +1371,20 @@ function renderHistory() {
       } else {
         plHtml = `<span class="pl-pending">no odds</span>`;
       }
+      // CLV chip: green if you beat the close, red if you got worse.
+      let clvChip = "";
+      if (r.odds_decimal && r.closing_decimal && r.odds_decimal > 1 && r.closing_decimal > 1) {
+        const clvPct = (r.closing_decimal / r.odds_decimal - 1) * 100;
+        const sign = clvPct >= 0 ? "+" : "";
+        const cls  = clvPct > 0.5 ? "pl-win" : clvPct < -0.5 ? "pl-loss" : "pl-pending";
+        clvChip = `<span style="margin-left:.6rem;font-size:.75rem;opacity:.9" title="Closing line was ${r.closing_decimal.toFixed(2)}. You bet at ${r.odds_decimal.toFixed(2)}.">CLV <span class="${cls}" style="margin:0">${sign}${clvPct.toFixed(1)}%</span></span>`;
+      }
       betStrip = `<div class="h-bet-strip">
         <span class="stake">$${r.stake}</span>
         <span>@</span>
         <span class="stake">${odds}</span>
         ${plHtml}
+        ${clvChip}
       </div>`;
     } else {
       betStrip = `<div class="h-bet-strip empty">no stake recorded</div>`;
