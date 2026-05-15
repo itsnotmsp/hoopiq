@@ -56,12 +56,17 @@ NBA_TEAMS = list({tid: (tid, abbr) for tid, abbr in NBA_TEAMS}.values())
 # ESPN fetchers
 # ---------------------------------------------------------------------------
 
-async def fetch_team_schedule(client: httpx.AsyncClient, team_id: int, season_year: int) -> list[dict]:
-    """Fetch all games for one team in one season."""
+async def fetch_team_schedule(client: httpx.AsyncClient, team_id: int, season_year: int,
+                              seasontype: int = 2) -> list[dict]:
+    """Fetch all games for one team in one season.
+
+    seasontype: 1 = preseason, 2 = regular season, 3 = playoffs.
+    Call once with 2 and once with 3 to get the full year.
+    """
     try:
         r = await client.get(
             SCHEDULE_URL.format(team_id=team_id),
-            params={"season": season_year, "seasontype": 2},  # 2=regular, 3=playoffs
+            params={"season": season_year, "seasontype": seasontype},
             timeout=15.0,
         )
         r.raise_for_status()
@@ -156,9 +161,11 @@ async def fetch_team_schedule(client: httpx.AsyncClient, team_id: int, season_ye
 
 
 async def fetch_all_seasons(season_years: list[int]) -> pd.DataFrame:
-    """Pull all teams × all seasons concurrently (ESPN handles the load fine)."""
+    """Pull all teams × all seasons (regular season + playoffs) concurrently."""
     all_rows = []
-    total = len(NBA_TEAMS) * len(season_years)
+    # 2 seasontypes per season-year: regular + playoffs
+    SEASONTYPES = [(2, "regular"), (3, "playoffs")]
+    total = len(NBA_TEAMS) * len(season_years) * len(SEASONTYPES)
 
     async with httpx.AsyncClient(headers=HEADERS) as client:
         with Progress(
@@ -171,20 +178,23 @@ async def fetch_all_seasons(season_years: list[int]) -> pd.DataFrame:
             task = prog.add_task("Fetching schedules...", total=total)
 
             for season_year in season_years:
-                # Fetch all 30 teams concurrently for this season
-                tasks = [
-                    fetch_team_schedule(client, tid, season_year)
-                    for tid, _ in NBA_TEAMS
-                ]
-                results = await asyncio.gather(*tasks)
+                for seasontype_id, seasontype_label in SEASONTYPES:
+                    tasks = [
+                        fetch_team_schedule(client, tid, season_year, seasontype_id)
+                        for tid, _ in NBA_TEAMS
+                    ]
+                    results = await asyncio.gather(*tasks)
 
-                season_rows = 0
-                for rows in results:
-                    all_rows.extend(rows)
-                    season_rows += len(rows)
-                    prog.advance(task)
+                    season_rows = 0
+                    for rows in results:
+                        all_rows.extend(rows)
+                        season_rows += len(rows)
+                        prog.advance(task)
 
-                console.print(f"  [green]✓[/green] {season_year-1}-{str(season_year)[2:]} season: {season_rows} game-team rows")
+                    console.print(
+                        f"  [green]✓[/green] {season_year-1}-{str(season_year)[2:]} "
+                        f"{seasontype_label}: {season_rows} game-team rows"
+                    )
 
     if not all_rows:
         raise RuntimeError("No data pulled. Check internet connection.")
@@ -243,9 +253,15 @@ async def update_game_logs() -> pd.DataFrame:
     existing = pd.read_parquet(out_path)
     existing["GAME_DATE"] = pd.to_datetime(existing["GAME_DATE"])
     last_date = existing["GAME_DATE"].max()
-    console.print(f"Existing data through {last_date.date()}. Fetching 2024 updates...")
+    # Refresh the *current* season (regular + playoffs) — was previously
+    # hardcoded to [2024] which is why playoff games never showed up.
+    current = max(SEASON_YEARS)
+    console.print(
+        f"Existing data through {last_date.date()}. "
+        f"Refreshing {current-1}-{str(current)[2:]} (regular + playoffs)..."
+    )
 
-    new_df = await fetch_all_seasons([2024])
+    new_df = await fetch_all_seasons([current])
     new_df["GAME_DATE"] = pd.to_datetime(new_df["GAME_DATE"])
     new_rows = new_df[new_df["GAME_DATE"] > last_date]
 
