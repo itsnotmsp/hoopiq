@@ -36,6 +36,7 @@ SEASON_YEARS = [2023, 2024, 2025, 2026]
 ESPN_BASE    = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba"
 TEAMS_URL    = f"{ESPN_BASE}/teams"
 SCHEDULE_URL = f"{ESPN_BASE}/teams/{{team_id}}/schedule"
+SUMMARY_URL  = f"{ESPN_BASE}/summary"   # ?event={game_id}, returns full box score
 
 HEADERS = {"User-Agent": "HoopIQ/1.0", "Accept": "application/json"}
 
@@ -160,6 +161,165 @@ async def fetch_team_schedule(client: httpx.AsyncClient, team_id: int, season_ye
     return rows
 
 
+async def fetch_boxscore_stats(client: httpx.AsyncClient, game_id: str) -> dict:
+    """
+    Fetch full box-score stats for one game.
+
+    Why this exists: ESPN's /teams/{id}/schedule endpoint returns playoff games
+    with PTS/score filled in but ALL the box-score fields (FGA, FTA, OREB, TOV,
+    etc.) as 0. Those stats are only available via the /summary endpoint per
+    game. Without a second pass, anything that uses FGA/FTA/etc. (pace, true
+    shooting, possessions) silently returns 0 for every playoff game.
+
+    Returns: {team_id_int: {stat_name: value}} or empty dict on error.
+    """
+    try:
+        r = await client.get(SUMMARY_URL, params={"event": game_id}, timeout=15.0)
+        r.raise_for_status()
+        data = r.json()
+    except Exception:
+        return {}
+
+    out = {}
+    for team_box in data.get("boxscore", {}).get("teams", []):
+        try:
+            tid = int(team_box.get("team", {}).get("id", 0))
+        except (TypeError, ValueError):
+            continue
+        if not tid:
+            continue
+        # ESPN box-score stats are a flat list of {name, displayValue} dicts.
+        # Naming convention sometimes differs from the schedule endpoint —
+        # we'll map common variants to the schedule names downstream code uses.
+        stats = {}
+        for s in team_box.get("statistics", []):
+            name = s.get("name") or s.get("label") or s.get("abbreviation") or ""
+            val  = s.get("displayValue", "")
+            if name:
+                stats[name] = val
+        out[tid] = stats
+    return out
+
+
+def _parse_stat(stat_map: dict, *keys, default: float = 0.0) -> float:
+    """Try a list of possible stat names (different endpoints use different ones)
+    and return the first hit as a float."""
+    for k in keys:
+        v = stat_map.get(k, "")
+        if v in (None, "", "-"):
+            continue
+        s = str(v)
+        # Some stats arrive as "fieldGoalsMade-fieldGoalsAttempted" pair "12-30"
+        if "-" in s and not s.startswith("-"):
+            # caller will handle made/attempted pairs separately
+            continue
+        try:
+            return float(s.replace("%", ""))
+        except ValueError:
+            continue
+    return default
+
+
+def _parse_made_attempted(stat_map: dict, key: str) -> tuple[float, float]:
+    """ESPN sometimes encodes shots as 'made-attempted' (e.g. '40-87'). Parse both."""
+    v = stat_map.get(key, "")
+    if isinstance(v, str) and "-" in v:
+        parts = v.split("-", 1)
+        try:
+            return float(parts[0]), float(parts[1])
+        except (ValueError, IndexError):
+            pass
+    return 0.0, 0.0
+
+
+async def backfill_box_scores(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    For every game where stats are missing (FGA == 0 despite PTS > 0 — the
+    classic playoff data shape), pull the box score and fill the stat columns.
+    Concurrent with a semaphore so we don't slam ESPN.
+    """
+    if "FGA" not in df.columns:
+        return df
+
+    # Find rows that need backfilling
+    needs = df[(df["FGA"] == 0) & (df["PTS"] > 0)]
+    if not len(needs):
+        console.print("[dim]No box-score backfill needed.[/dim]")
+        return df
+
+    game_ids = needs["GAME_ID"].unique().tolist()
+    console.print(
+        f"[yellow]Backfilling box-score stats for {len(game_ids)} games "
+        f"(playoff games + any others missing detail)...[/yellow]"
+    )
+
+    sem = asyncio.Semaphore(8)   # 8 concurrent requests is fine for ESPN
+
+    async def fetch_one(client, gid):
+        async with sem:
+            return gid, await fetch_boxscore_stats(client, str(gid))
+
+    async with httpx.AsyncClient(headers=HEADERS) as client:
+        with Progress(
+            SpinnerColumn(), TextColumn("{task.description}"),
+            BarColumn(), MofNCompleteColumn(), console=console,
+        ) as prog:
+            task = prog.add_task("Fetching box scores...", total=len(game_ids))
+            tasks = [fetch_one(client, gid) for gid in game_ids]
+            box_by_game = {}
+            for fut in asyncio.as_completed(tasks):
+                gid, box = await fut
+                if box:
+                    box_by_game[gid] = box
+                prog.advance(task)
+
+    # Apply the backfilled stats back into the DataFrame.
+    # df has two rows per GAME_ID (one per team), keyed by (GAME_ID, TEAM_ID).
+    updated = 0
+    for idx, row in needs.iterrows():
+        gid, tid = row["GAME_ID"], int(row["TEAM_ID"])
+        box = box_by_game.get(gid)
+        if not box or tid not in box:
+            continue
+        stats = box[tid]
+
+        # ESPN /summary uses different stat names than /schedule. Map both.
+        fgm, fga   = _parse_made_attempted(stats, "fieldGoalsMade-fieldGoalsAttempted")
+        if fga == 0:
+            fga = _parse_stat(stats, "fieldGoalsAttempted")
+            fgm = _parse_stat(stats, "fieldGoalsMade")
+        fg3m, fg3a = _parse_made_attempted(stats, "threePointFieldGoalsMade-threePointFieldGoalsAttempted")
+        if fg3a == 0:
+            fg3a = _parse_stat(stats, "threePointFieldGoalsAttempted")
+            fg3m = _parse_stat(stats, "threePointFieldGoalsMade")
+        ftm, fta   = _parse_made_attempted(stats, "freeThrowsMade-freeThrowsAttempted")
+        if fta == 0:
+            fta = _parse_stat(stats, "freeThrowsAttempted")
+            ftm = _parse_stat(stats, "freeThrowsMade")
+
+        df.at[idx, "FGM"]    = fgm
+        df.at[idx, "FGA"]    = fga
+        df.at[idx, "FG_PCT"] = round(100 * fgm / fga, 1) if fga else 0
+        df.at[idx, "FG3M"]   = fg3m
+        df.at[idx, "FG3A"]   = fg3a
+        df.at[idx, "FG3_PCT"]= round(100 * fg3m / fg3a, 1) if fg3a else 0
+        df.at[idx, "FTM"]    = ftm
+        df.at[idx, "FTA"]    = fta
+        df.at[idx, "FT_PCT"] = round(100 * ftm / fta, 1) if fta else 0
+        df.at[idx, "REB"]    = _parse_stat(stats, "rebounds", "totalRebounds")
+        df.at[idx, "OREB"]   = _parse_stat(stats, "offensiveRebounds")
+        df.at[idx, "DREB"]   = _parse_stat(stats, "defensiveRebounds")
+        df.at[idx, "AST"]    = _parse_stat(stats, "assists")
+        df.at[idx, "STL"]    = _parse_stat(stats, "steals")
+        df.at[idx, "BLK"]    = _parse_stat(stats, "blocks")
+        df.at[idx, "TOV"]    = _parse_stat(stats, "turnovers")
+        df.at[idx, "PF"]     = _parse_stat(stats, "foulsPersonal", "personalFouls", "fouls")
+        updated += 1
+
+    console.print(f"[green]✓[/green] Filled stats for {updated} team-game rows")
+    return df
+
+
 async def fetch_all_seasons(season_years: list[int]) -> pd.DataFrame:
     """Pull all teams × all seasons (regular season + playoffs) concurrently."""
     all_rows = []
@@ -203,6 +363,9 @@ async def fetch_all_seasons(season_years: list[int]) -> pd.DataFrame:
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
     df = df.drop_duplicates(subset=["GAME_ID", "TEAM_ID"])
     df = df.sort_values(["TEAM_ID", "GAME_DATE"]).reset_index(drop=True)
+
+    # Backfill box-score stats for games that came in without them (mainly playoffs)
+    df = await backfill_box_scores(df)
     return df
 
 
@@ -268,11 +431,18 @@ async def update_game_logs() -> pd.DataFrame:
     if len(new_rows):
         combined = pd.concat([existing, new_rows], ignore_index=True)
         combined = combined.drop_duplicates(subset=["GAME_ID", "TEAM_ID"])
+        # Backfill any rows still missing box-score stats (existing playoff
+        # games from before this fix shipped will be caught here).
+        combined = await backfill_box_scores(combined)
         combined.to_parquet(out_path, index=False)
         console.print(f"[green]+{len(new_rows)} new rows → {len(combined):,} total[/green]")
         return combined
 
-    console.print("[dim]No new games found.[/dim]")
+    # No new games — but existing data may still have playoff rows with empty
+    # stats from earlier pipeline runs. Run backfill once anyway.
+    existing = await backfill_box_scores(existing)
+    existing.to_parquet(out_path, index=False)
+    console.print("[dim]No new games. Backfill applied to existing data.[/dim]")
     return existing
 
 

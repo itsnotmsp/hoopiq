@@ -174,8 +174,9 @@ def train_final(df: pd.DataFrame, feature_cols: list[str], target: str) -> xgb.X
     val_probs = model.predict_proba(X_val)[:, 1]
     val_preds = (val_probs >= 0.5).astype(int)
     console.print(
-        f"\n[bold green]Holdout accuracy: {accuracy_score(y_val, val_preds):.3f}  "
-        f"AUC: {roc_auc_score(y_val, val_probs):.3f}[/bold green]"
+        f"\n[dim]Holdout (raw, uncalibrated): {accuracy_score(y_val, val_preds):.3f}  "
+        f"AUC: {roc_auc_score(y_val, val_probs):.3f} — "
+        f"calibrated number printed below in 'Saved' section is what the API uses.[/dim]"
     )
 
     return model, X_val, y_val
@@ -240,6 +241,13 @@ def save_artifacts(model, calibrated, feature_cols: list[str], cv_results: dict,
         "n_features": len(feature_cols),
     }
     EVAL_PATH.write_text(json.dumps(eval_report, indent=2))
+
+    h = eval_report["holdout"]
+    console.print(
+        f"\n[bold green]Holdout (CALIBRATED — this is the API's accuracy): "
+        f"{h['accuracy']:.4f}  AUC: {h['auc']:.4f}  "
+        f"LogLoss: {h['log_loss']:.4f}  Brier: {h['brier']:.4f}[/bold green]"
+    )
 
     console.print(f"\n[bold green]Saved:[/bold green]")
     console.print(f"  {MODEL_PATH}")
