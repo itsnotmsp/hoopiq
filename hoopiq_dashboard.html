@@ -334,6 +334,7 @@ nav{display:flex;gap:2px}
   <nav>
     <button class="nav-btn on" onclick="showPage('games',this)">Games</button>
     <button class="nav-btn" onclick="showPage('props',this)">Props</button>
+    <button class="nav-btn" onclick="showPage('degen',this)" title="High-payout alt lines. Designed to be profitable around a 33% win rate. Use small stakes.">🎰 Degen</button>
     <button class="nav-btn" onclick="showPage('fantasy',this)">Fantasy</button>
     <button class="nav-btn" onclick="showPage('history',this)">History</button>
     <button class="nav-btn" onclick="showPage('settings',this)">Settings</button>
@@ -407,6 +408,62 @@ nav{display:flex;gap:2px}
 </div>
 
 <!-- ═══════════════════════════════ FANTASY ══════════════════════════════ -->
+<!-- ═══════════════════════════════ DEGEN ═══════════════════════════════ -->
+<style>
+  .degen-warning{padding:.9rem 1rem;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.3);
+                 border-radius:var(--radius);color:var(--red);font-size:.85rem;margin-bottom:1rem;line-height:1.5}
+  .degen-warning b{color:#fca5a5}
+  .degen-row{display:grid;grid-template-columns:1.8fr 80px 90px 90px 90px 120px 100px;
+             align-items:center;gap:.5rem;padding:.8rem 1rem;background:var(--s1);
+             border:1px solid var(--b2);border-radius:var(--radius-sm);margin-bottom:.5rem;
+             transition:border-color .15s}
+  .degen-row:hover{border-color:var(--accent)}
+  .degen-player{font-weight:600}
+  .degen-sub{font-size:.7rem;color:var(--muted);font-family:'DM Mono',monospace;margin-top:.15rem}
+  .degen-side-pill{display:inline-block;padding:.15rem .5rem;border-radius:var(--radius-xs);
+                   font-family:'DM Mono',monospace;font-size:.7rem;font-weight:600;letter-spacing:.04em}
+  .degen-side-pill.over{background:rgba(34,197,94,.12);color:var(--green);border:1px solid rgba(34,197,94,.4)}
+  .degen-side-pill.under{background:rgba(239,68,68,.12);color:var(--red);border:1px solid rgba(239,68,68,.4)}
+  .degen-num{text-align:right;font-family:'DM Mono',monospace;font-size:.85rem}
+  .degen-odds{color:var(--accent);font-weight:600;font-size:1rem}
+  .degen-ev{color:var(--green);font-weight:600}
+  .degen-hit{color:var(--accent2)}
+  .degen-book{font-family:'DM Mono',monospace;font-size:.7rem;color:var(--muted);text-transform:uppercase}
+  .degen-payout{font-size:.7rem;color:var(--muted)}
+  .degen-bet-btn{padding:.55rem .9rem;background:var(--accent);color:#000;border:none;
+                 border-radius:var(--radius-sm);font-weight:600;cursor:pointer;font-size:.8rem}
+  .degen-bet-btn:hover{filter:brightness(1.1)}
+  .degen-hdr{display:grid;grid-template-columns:1.8fr 80px 90px 90px 90px 120px 100px;
+             gap:.5rem;padding:.4rem 1rem;font-size:.7rem;color:var(--muted);
+             text-transform:uppercase;letter-spacing:.06em;margin-bottom:.3rem}
+</style>
+<div class="page" id="page-degen">
+  <div class="degen-warning">
+    <b>🎰 Degen lounge.</b> High-payout alt lines targeting <b>~33% win rate to break even</b>.
+    Designed for <b>small stakes</b> (try $25, not $100). Expected value is realized over hundreds
+    of bets — expect cold streaks. These won't replace your standard props; they're a side bankroll.
+  </div>
+  <div class="actions">
+    <button class="btn-primary" onclick="loadDegen()">⚡ Refresh</button>
+    <button class="btn-secondary" onclick="degenFilter('all',this)" id="dgf-all">All stats</button>
+    <button class="btn-secondary" onclick="degenFilter('PTS',this)" id="dgf-pts">Points</button>
+    <button class="btn-secondary" onclick="degenFilter('REB',this)" id="dgf-reb">Rebounds</button>
+    <button class="btn-secondary" onclick="degenFilter('AST',this)" id="dgf-ast">Assists</button>
+    <button class="btn-secondary" onclick="degenFilter('OVER',this)" id="dgf-over">Overs only</button>
+  </div>
+  <div class="degen-hdr">
+    <span>Player</span>
+    <span style="text-align:center">Side</span>
+    <span style="text-align:right">Line / L10</span>
+    <span style="text-align:right">Hit rate</span>
+    <span style="text-align:right">Odds</span>
+    <span style="text-align:right">Edge / EV</span>
+    <span></span>
+  </div>
+  <div id="degen-list"><div class="spin"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div></div>
+</div>
+
+<!-- ═══════════════════════════════ FANTASY ═════════════════════════════ -->
 <div class="page" id="page-fantasy">
   <div class="fantasy-metrics">
     <div class="mc"><div class="mc-lbl">Players tonight</div><div class="mc-val" id="fm-count">—</div></div>
@@ -1483,7 +1540,103 @@ const _origShowPage2 = showPage;
 showPage = function(name, btn) {
   _origShowPage2(name, btn);
   if(name === "history") loadHistory();
+  if(name === "degen")   loadDegen();
 };
+
+// ─── DEGEN PICKS ────────────────────────────────────────────────────────────
+let degenData   = [];
+let degenFilterVal = "all";
+
+async function loadDegen() {
+  const list = document.getElementById("degen-list");
+  list.innerHTML = '<div class="spin"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>';
+  try {
+    const r = await apiGet("/props/degen");
+    degenData = r.degen_picks || [];
+    renderDegen();
+  } catch(e) {
+    list.innerHTML = '<div class="empty">Could not load degen picks: ' + e.message + '</div>';
+  }
+}
+
+function degenFilter(f, btn) {
+  degenFilterVal = f;
+  document.querySelectorAll("[id^=dgf-]").forEach(b => b.classList.remove("active"));
+  if (btn) btn.classList.add("active");
+  renderDegen();
+}
+
+function renderDegen() {
+  let picks = degenData;
+  if(["PTS","REB","AST"].includes(degenFilterVal)) picks = picks.filter(p => p.stat === degenFilterVal);
+  if(degenFilterVal === "OVER") picks = picks.filter(p => p.side === "OVER");
+
+  if(!picks.length) {
+    document.getElementById("degen-list").innerHTML =
+      '<div class="empty">No degen picks meet the bar right now.<br><small>The model is being honest — sometimes there are no +EV bets on the slate.</small></div>';
+    return;
+  }
+
+  document.getElementById("degen-list").innerHTML = picks.map((p, i) => {
+    const sideClass = p.side === "OVER" ? "over" : "under";
+    return `<div class="degen-row">
+      <div>
+        <div class="degen-player">${p.player}</div>
+        <div class="degen-sub">${p.stat_label} · best @ ${p.best_book.toUpperCase()}</div>
+      </div>
+      <div style="text-align:center">
+        <span class="degen-side-pill ${sideClass}">${p.side}</span>
+      </div>
+      <div class="degen-num">
+        <b>${p.line}</b>
+        <div class="degen-sub">L10 avg: ${p.l10_avg}</div>
+      </div>
+      <div class="degen-num">
+        <span class="degen-hit">${p.hit_rate}%</span>
+        <div class="degen-sub">${p.l10_hits}/${p.l10_games} games</div>
+      </div>
+      <div class="degen-num">
+        <span class="degen-odds">${p.decimal_odds.toFixed(2)}</span>
+        <div class="degen-sub">${p.american_odds > 0 ? '+' : ''}${p.american_odds}</div>
+      </div>
+      <div class="degen-num">
+        <div>edge <b>+${p.edge_pct}%</b></div>
+        <div class="degen-sub">EV <span class="degen-ev">+$${(p.ev_per_dollar * 100).toFixed(0)}</span>/$100</div>
+        <div class="degen-payout">payout +$${p.payout_on_100.toFixed(0)}</div>
+      </div>
+      <div style="text-align:right">
+        <button class="degen-bet-btn" onclick='logDegenPick(${JSON.stringify(p)})'>+ Bet</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function logDegenPick(p) {
+  // Reuse the existing bet modal — pre-fill side, odds, and a smaller default
+  // stake ($25) since degen picks are inherently riskier.
+  const stat_word = ({PTS:"points",REB:"rebounds",AST:"assists"})[p.stat] || p.stat;
+  openBetModal({
+    title: `🎰 Degen: ${p.player} ${stat_word}`,
+    sub:   `${p.side} ${p.line} · L10 hit rate ${p.hit_rate}% · model edge +${p.edge_pct}%`,
+    sides: [
+      { label: `${p.side} ${p.line}`, value: p.side, name: `${p.side} ${p.line} ${stat_word}`,
+        odds: p.decimal_odds },
+    ],
+    basePayload: {
+      type: "prop",
+      player: p.player,
+      stat: p.stat,
+      line: p.line,
+      projection: p.l10_avg,
+      matchup: "",
+      notes: `Degen pick · EV +$${(p.ev_per_dollar * 100).toFixed(0)} per $100 · hit rate ${p.hit_rate}%`,
+    },
+  });
+  // Lower the default stake for degen bets.
+  document.getElementById("bet-stake").value = 25;
+  // Auto-select the only side (degen picks always present one direction).
+  pickBetSide(0);
+}
 
 function togglePickDetail(rank) {
   const el = document.getElementById("pick-detail-"+rank);

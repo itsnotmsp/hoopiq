@@ -589,6 +589,165 @@ async def top_picks(date_str: Optional[str] = None):
             "total_candidates": len(picks), "top_picks": picks[:10]}
 
 
+@app.get("/props/degen")
+async def degen_props(
+    min_decimal: float = 3.0,
+    min_hit_rate: float = 0.25,
+    min_edge: float = 0.10,
+    limit: int = 15,
+):
+    """
+    High-payout alt-line picks where the model thinks the empirical hit rate
+    beats the breakeven implied by the offered odds.
+
+    Math:
+      breakeven_p = 1 / decimal_odds
+      edge = empirical_p / breakeven_p - 1
+    A pick is included only if `edge >= min_edge`. Default 10% edge over
+    breakeven — conservative; raise it to be stricter.
+
+    Params:
+      min_decimal  — minimum decimal odds to consider (default 3.0 ≈ +200).
+                     Lower this to include slightly safer lines.
+      min_hit_rate — minimum empirical P(hit) from player's last 10 games.
+                     Below this it's a true lottery ticket, not a +EV bet.
+      min_edge     — empirical_p must exceed breakeven_p by this multiplier
+                     (0.10 = 10% edge).
+      limit        — top N picks to return, ranked by EV per $1 staked.
+
+    Quota cost: 3 API requests per game on first call, then cached PROPS_TTL.
+    """
+    if state.player_log_cache is None:
+        raise HTTPException(503, "Player log cache not loaded")
+
+    df = state.player_log_cache
+
+    # Load the odds module
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("odds_mod", "10_odds_integration.py")
+        odds_mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(odds_mod)
+    except Exception as e:
+        raise HTTPException(503, f"Odds module load failed: {e}")
+
+    try:
+        odds_games = await odds_mod.fetch_game_odds()
+    except Exception as e:
+        return {"degen_picks": [], "error": f"No games from odds: {e}"}
+
+    if not odds_games:
+        return {"degen_picks": [], "games": 0, "note": "No upcoming games."}
+
+    def amer_to_dec(am):
+        try: n = float(am)
+        except (TypeError, ValueError): return None
+        if n == 0: return None
+        return round((n/100 + 1) if n > 0 else (100/abs(n) + 1), 3)
+
+    STAT_COLS = {"POINTS": "PTS", "REBOUNDS": "REB", "ASSISTS": "AST"}
+
+    picks = []
+    for og in odds_games[:5]:  # cap at 5 games to control quota burn
+        try:
+            alt = await odds_mod.fetch_player_props_alt(og["game_id"])
+        except Exception:
+            continue
+
+        for stat_label, players in (alt.get("props") or {}).items():
+            stat_col = STAT_COLS.get(stat_label)
+            if not stat_col:
+                continue
+
+            for player_name, info in (players or {}).items():
+                # Last 10 games for this player — empirical distribution.
+                p_logs = df[df["PLAYER_NAME"].str.lower() == player_name.lower()]
+                if len(p_logs) < 5:
+                    continue
+                last10 = p_logs.sort_values("GAME_DATE").tail(10)
+                if stat_col not in last10.columns:
+                    continue
+                values = last10[stat_col].astype(float).values
+                if len(values) < 5:
+                    continue
+
+                avg_l10 = float(values.mean())
+
+                for offer in info.get("lines", []):
+                    point = offer.get("point")
+                    side  = offer.get("side")  # "Over" or "Under"
+                    if point is None or side not in ("Over", "Under"):
+                        continue
+
+                    # Best (highest) decimal odds across bookmakers for this leg.
+                    prices = offer.get("prices") or {}
+                    decimals = [amer_to_dec(p) for p in prices.values()]
+                    decimals = [d for d in decimals if d is not None]
+                    if not decimals:
+                        continue
+                    best_dec = max(decimals)
+                    if best_dec < min_decimal:
+                        continue
+
+                    # Empirical P(hit): fraction of last-10 games where the
+                    # side would have won at this line.
+                    if side == "Over":
+                        hits = int((values >  point).sum())
+                    else:
+                        hits = int((values <  point).sum())
+                    p_hit = hits / len(values)
+                    if p_hit < min_hit_rate:
+                        continue
+
+                    breakeven_p = 1.0 / best_dec
+                    edge = (p_hit / breakeven_p) - 1.0
+                    if edge < min_edge:
+                        continue
+
+                    # Expected value per $1 staked.
+                    ev_per_dollar = p_hit * (best_dec - 1) - (1 - p_hit)
+
+                    # Best bookmaker for this price (so user knows where to bet)
+                    best_book = max(prices.items(),
+                                    key=lambda kv: amer_to_dec(kv[1]) or 0)[0]
+
+                    picks.append({
+                        "player":       player_name,
+                        "stat":         stat_col,
+                        "stat_label":   stat_label.lower(),
+                        "side":         side.upper(),       # OVER / UNDER
+                        "line":         point,
+                        "decimal_odds": best_dec,
+                        "american_odds": prices[best_book],
+                        "best_book":    best_book,
+                        "all_prices":   prices,
+                        "l10_avg":      round(avg_l10, 1),
+                        "l10_hits":     hits,
+                        "l10_games":    len(values),
+                        "hit_rate":     round(p_hit * 100, 1),
+                        "breakeven_rate": round(breakeven_p * 100, 1),
+                        "edge_pct":     round(edge * 100, 1),
+                        "ev_per_dollar": round(ev_per_dollar, 3),
+                        "payout_on_100": round(100 * (best_dec - 1), 2),
+                        "game_id":      og["game_id"],
+                    })
+
+    # Rank by EV per dollar (better proxy than raw edge — accounts for variance)
+    picks.sort(key=lambda p: p["ev_per_dollar"], reverse=True)
+    return {
+        "games_scanned":   min(len(odds_games), 5),
+        "total_candidates": len(picks),
+        "min_decimal":      min_decimal,
+        "min_hit_rate":     min_hit_rate,
+        "min_edge":         min_edge,
+        "degen_picks":      picks[:limit],
+        "warning": (
+            "These are high-variance bets. Use smaller stakes than your standard "
+            "props (e.g. $25 instead of $100). +EV is realized over hundreds of "
+            "bets, not dozens — expect cold streaks even when picks are good."
+        ),
+    }
+
+
 @app.get("/props/starts")
 async def start_sit(date_str: Optional[str] = None):
     data = await fantasy_lineup(date_str)
