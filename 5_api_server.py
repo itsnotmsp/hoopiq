@@ -29,7 +29,56 @@ EVAL_PATH  = MODEL_DIR / "eval_report.json"
 
 ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 ESPN_SUMMARY    = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary"
+ESPN_INJURIES   = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
 HTTP_HEADERS    = {"User-Agent": "HoopIQ/1.0", "Accept": "application/json"}
+
+# Simple in-process injury cache (ESPN updates a few times daily; 30 min TTL).
+_injury_cache = {"data": None, "fetched_at": 0.0}
+
+
+async def fetch_injuries() -> dict:
+    """
+    Live NBA injuries from ESPN's (free, no-auth) injuries endpoint.
+
+    Returns: { "TEAM_ABBR": [ {name, status, detail}, ... ] }
+    status is typically "Out", "Day-To-Day", "Out (Injury Management)", etc.
+
+    NOTE: this is LIVE context only — it is NOT a trained model feature.
+    Historical per-game injury data would be required for that, which ESPN
+    does not expose. Use this to eyeball-adjust bets, not as model accuracy.
+    """
+    import time
+    now = time.time()
+    if _injury_cache["data"] is not None and (now - _injury_cache["fetched_at"]) < 1800:
+        return _injury_cache["data"]
+
+    out: dict = {}
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            r = await client.get(ESPN_INJURIES, headers=HTTP_HEADERS)
+            r.raise_for_status()
+            data = r.json()
+        # ESPN shape: { injuries: [ { team:{abbreviation}, injuries:[ {athlete:{displayName}, status, details:{type}} ] } ] }
+        for team_block in data.get("injuries", []):
+            team = (team_block.get("team") or {}).get("abbreviation", "")
+            if not team:
+                continue
+            entries = []
+            for inj in team_block.get("injuries", []):
+                ath = (inj.get("athlete") or {}).get("displayName", "")
+                status = inj.get("status", "") or (inj.get("type") or {}).get("description", "")
+                detail = (inj.get("details") or {}).get("type", "") or inj.get("shortComment", "")
+                if ath:
+                    entries.append({"name": ath, "status": status, "detail": detail})
+            if entries:
+                out[team.upper()] = entries
+    except Exception as e:
+        log.warning(f"injury fetch failed: {e}")
+        out = {}
+
+    _injury_cache["data"] = out
+    _injury_cache["fetched_at"] = now
+    return out
 
 app = FastAPI(title="HoopIQ API", version="2.0.0")
 app.add_middleware(
@@ -485,11 +534,30 @@ async def top_picks(date_str: Optional[str] = None):
     except Exception:
         pass
 
+    # Pull live injuries ONCE for this slate. Players who are OUT must never
+    # be recommended (the bet auto-loses — they don't play). Day-to-day /
+    # questionable players are kept but flagged and barred from high-confidence.
+    inj_all = await fetch_injuries()
+    def _injury_status(player_name, team_abbr):
+        for e in inj_all.get(team_abbr, []):
+            if e["name"].lower() == player_name.lower():
+                s = (e.get("status") or "").lower()
+                if "out" in s:
+                    return "OUT", e
+                if "day" in s or "question" in s or "doubt" in s:
+                    return "RISK", e
+                return "RISK", e   # any listed status → treat as risky
+        return "OK", None
+
     picks = []
     for name in players:
         p_df = df[df["PLAYER_NAME"]==name]
         if len(p_df)<10: continue
         team = p_df["PLAYER_TEAM"].iloc[-1]
+        # ── INJURY GATE ──
+        inj_state, inj_entry = _injury_status(name, team)
+        if inj_state == "OUT":
+            continue   # never recommend a prop for a player who isn't playing
         opp = team_to_opp.get(team,""); is_home = team_home.get(team, True)
         features = build_player_features(name, opp, is_home, game_date)
         if features is None: continue
@@ -569,7 +637,15 @@ async def top_picks(date_str: Optional[str] = None):
                 confidence >= 65
                 and (edge_pct is not None and abs(edge_pct) >= 15)
                 and cons_pct >= 65
+                and inj_state == "OK"   # day-to-day players can't be high-confidence
             )
+
+            # Surface the injury risk prominently in the reasons list.
+            if inj_state == "RISK" and inj_entry:
+                reasons.insert(0,
+                    f"⚠️ INJURY RISK — {inj_entry['name']} listed "
+                    f"{inj_entry.get('status','day-to-day')}. Minutes uncertain; "
+                    f"projection may not hold.")
 
             picks.append({
                 "player": name, "team": team, "opponent": opp, "home": is_home,
@@ -580,6 +656,11 @@ async def top_picks(date_str: Optional[str] = None):
                 "pick": pick_side, "recommendation": rec, "confidence": round(confidence),
                 "confidence_label": confidence_word,
                 "high_confidence": high_conf,
+                "injury_status": inj_state,   # "OK" or "RISK" (OUT players already filtered)
+                "injury_detail": (
+                    f"{inj_entry['name']} — {inj_entry.get('status','')}"
+                    if inj_entry else None
+                ),
                 "simple_explanation": simple,
                 "reasons": reasons[:5],
                 "form": {"avg_last_5": round(avg5,1), "avg_last_10": round(avg10,1),
@@ -656,6 +737,17 @@ async def degen_props(
 
     STAT_COLS = {"POINTS": "PTS", "REBOUNDS": "REB", "ASSISTS": "AST"}
 
+    # Live injuries — degen bets on an OUT player are guaranteed losses.
+    inj_all = await fetch_injuries()
+    # Flatten to a fast name→status lookup across all teams.
+    injured_lookup = {}
+    for _team, _entries in inj_all.items():
+        for _e in _entries:
+            s = (_e.get("status") or "").lower()
+            injured_lookup[_e["name"].lower()] = (
+                "OUT" if "out" in s else "RISK"
+            )
+
     picks = []
     for og in odds_games[:5]:  # cap at 5 games to control quota burn
         try:
@@ -669,6 +761,10 @@ async def degen_props(
                 continue
 
             for player_name, info in (players or {}).items():
+                # ── INJURY GATE ── never surface a degen bet on an OUT player.
+                inj = injured_lookup.get(player_name.lower())
+                if inj == "OUT":
+                    continue
                 # Last 10 games for this player — empirical distribution.
                 p_logs = df[df["PLAYER_NAME"].str.lower() == player_name.lower()]
                 if len(p_logs) < 5:
@@ -738,6 +834,7 @@ async def degen_props(
                         "edge_pct":     round(edge * 100, 1),
                         "ev_per_dollar": round(ev_per_dollar, 3),
                         "payout_on_100": round(100 * (best_dec - 1), 2),
+                        "injury_risk":  inj == "RISK",   # day-to-day; minutes uncertain
                         "game_id":      og["game_id"],
                     })
 
@@ -1411,11 +1508,37 @@ async def analyze_game_deep(req: GamePredictRequest):
         },
     }
 
-    # ── 2. INJURIES (placeholder - real version needs paid API) ──
+    # ── 2. INJURIES (live ESPN data — context only, not a model feature) ──
+    inj_all = await fetch_injuries()
+    home_inj = inj_all.get(home, [])
+    away_inj = inj_all.get(away, [])
+
+    def _summarize(entries):
+        # Highlight players who are fully OUT (biggest betting impact).
+        outs = [e for e in entries
+                if "out" in (e.get("status", "").lower())]
+        dtd = [e for e in entries
+               if "day" in (e.get("status", "").lower())]
+        if not entries:
+            return {"key_outs": [], "day_to_day": [],
+                    "impact": "No reported injuries"}
+        return {
+            "key_outs": [f"{e['name']} ({e['status']})" for e in outs],
+            "day_to_day": [f"{e['name']} ({e['status']})" for e in dtd],
+            "impact": (
+                f"{len(outs)} OUT, {len(dtd)} day-to-day"
+                if (outs or dtd) else "Reported but status unclear"
+            ),
+        }
+
     injuries = {
-        "home": {"key_outs": [], "impact": "Unknown - check ESPN/Rotowire"},
-        "away": {"key_outs": [], "impact": "Unknown - check ESPN/Rotowire"},
-        "note": "Live injury data requires paid API integration",
+        "home": _summarize(home_inj),
+        "away": _summarize(away_inj),
+        "note": (
+            "Live ESPN injuries. This is decision context for YOU — it does "
+            "not adjust the model's probability (no historical injury data to "
+            "train on). Weigh key OUTs manually before betting."
+        ),
     }
 
     # ── 3. HOME / AWAY SPLITS ──

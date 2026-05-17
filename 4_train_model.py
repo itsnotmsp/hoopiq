@@ -319,6 +319,83 @@ def tune_hyperparams(df: pd.DataFrame, feature_cols: list[str], target: str) -> 
 
 
 # ---------------------------------------------------------------------------
+# Feature pruning (#6) — drop low-importance noise features
+# ---------------------------------------------------------------------------
+
+def prune_features(df: pd.DataFrame, feature_cols: list[str], target: str,
+                   keep_fraction: float = 0.65) -> list[str]:
+    """
+    Train a quick model, rank features by importance, and keep only the top
+    `keep_fraction`. On ~5–10k games, 189 features is too many — the long tail
+    is mostly noise that hurts generalization. Pruning often RAISES CV accuracy
+    and always speeds up training.
+
+    Returns the pruned feature list. We verify the prune helps via a CV
+    comparison and only keep it if CV doesn't get worse.
+    """
+    console.print(
+        f"\n[bold]Feature pruning:[/bold] {len(feature_cols)} features → "
+        f"keeping top {int(keep_fraction*100)}%"
+    )
+
+    X = df[feature_cols].values
+    y = df[target].values
+
+    # Baseline CV with all features
+    base_cv = _quick_cv_auc(X, y)
+
+    quick = xgb.XGBClassifier(
+        n_estimators=300, max_depth=4, learning_rate=0.05,
+        subsample=0.8, colsample_bytree=0.7, random_state=42,
+        eval_metric="logloss", n_jobs=-1,
+    )
+    quick.fit(X, y)
+    importances = quick.feature_importances_
+
+    ranked = sorted(zip(feature_cols, importances), key=lambda x: x[1], reverse=True)
+    n_keep = max(10, int(len(feature_cols) * keep_fraction))
+    pruned = [f for f, _ in ranked[:n_keep]]
+
+    # CV with pruned features — only accept the prune if it doesn't hurt.
+    Xp = df[pruned].values
+    pruned_cv = _quick_cv_auc(Xp, y)
+
+    console.print(
+        f"  All {len(feature_cols)} feats  → CV AUC {base_cv:.4f}\n"
+        f"  Top {len(pruned)} feats     → CV AUC {pruned_cv:.4f}"
+    )
+
+    if pruned_cv >= base_cv - 0.003:   # allow tiny noise; pruning is worth it
+        dropped = [f for f, _ in ranked[n_keep:]]
+        console.print(
+            f"  [green]✓ Keeping pruned set[/green] "
+            f"(dropped {len(dropped)} low-signal features)"
+        )
+        return pruned
+    else:
+        console.print(
+            f"  [yellow]✗ Pruning hurt CV — keeping all {len(feature_cols)} features[/yellow]"
+        )
+        return feature_cols
+
+
+def _quick_cv_auc(X: np.ndarray, y: np.ndarray, n_splits: int = 4) -> float:
+    """Fast time-series CV AUC for the prune accept/reject decision."""
+    tscv = TimeSeriesSplit(n_splits=n_splits)
+    aucs = []
+    for tr, te in tscv.split(X):
+        m = xgb.XGBClassifier(
+            n_estimators=200, max_depth=4, learning_rate=0.05,
+            subsample=0.8, colsample_bytree=0.7, random_state=42,
+            eval_metric="logloss", n_jobs=-1,
+        )
+        m.fit(X[tr], y[tr])
+        p = m.predict_proba(X[te])[:, 1]
+        aucs.append(roc_auc_score(y[te], p))
+    return float(np.mean(aucs))
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -326,6 +403,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="HoopIQ Model Training")
     parser.add_argument("--tune", action="store_true", help="Run hyperparameter tuning")
     parser.add_argument("--eval-only", action="store_true", help="Load saved model and evaluate")
+    parser.add_argument("--no-prune", action="store_true",
+                        help="Skip feature pruning (keep all 189 features)")
     args = parser.parse_args()
 
     df, feature_cols, target = load_features()
@@ -337,7 +416,12 @@ if __name__ == "__main__":
         model = xgb.XGBClassifier()
         model.load_model(str(MODEL_PATH))
         calibrated = joblib.load(CALIB_PATH)
-        X = df[feature_cols].values
+        # Use the pruned feature list if one was saved
+        if FEAT_LIST.exists():
+            saved_feats = json.loads(FEAT_LIST.read_text())
+        else:
+            saved_feats = feature_cols
+        X = df[saved_feats].values
         y = df[target].values
         probs = calibrated.predict_proba(X)[:, 1]
         preds = (probs >= 0.5).astype(int)
@@ -345,6 +429,11 @@ if __name__ == "__main__":
         console.print(f"AUC              : {roc_auc_score(y, probs):.4f}")
         raise SystemExit(0)
 
+    # ── #6 Feature pruning (before tuning so we tune on the right feature set) ──
+    if not args.no_prune:
+        feature_cols = prune_features(df, feature_cols, target)
+
+    # ── #5 Hyperparameter tuning (on the pruned feature set) ──
     if args.tune:
         best_params = tune_hyperparams(df, feature_cols, target)
         DEFAULT_PARAMS.update(best_params)

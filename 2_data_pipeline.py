@@ -31,7 +31,10 @@ DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 
 # ESPN season year = end year of the season (2023 = 2022-23)
-SEASON_YEARS = [2023, 2024, 2025, 2026]
+# 2021-2026 = six seasons. Deliberately excludes 2020 (COVID bubble: neutral
+# sites, no travel/crowds, compressed schedule — structurally different from
+# normal NBA and known to hurt models predicting normal games).
+SEASON_YEARS = [2021, 2022, 2023, 2024, 2025, 2026]
 
 ESPN_BASE    = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba"
 TEAMS_URL    = f"{ESPN_BASE}/teams"
