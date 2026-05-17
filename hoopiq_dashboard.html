@@ -1081,6 +1081,7 @@ function renderTop10() {
           <div class="pick-player">${p.player}</div>
           <span class="pick-rec-badge ${recClass}">${rec}</span>
           ${p.high_confidence ? '<span class="pick-rec-badge" style="background:rgba(34,197,94,.15);color:var(--green);border:1px solid rgba(34,197,94,.4);margin-left:.4rem" title="High-confidence pick: model confidence ≥65, edge ≥15%, consistency ≥65%">🎯 HIGH CONF</span>' : ''}
+          ${p.injury_status === 'RISK' ? `<span class="pick-rec-badge" style="background:rgba(239,68,68,.15);color:var(--red);border:1px solid rgba(239,68,68,.5);margin-left:.4rem" title="${p.injury_detail||'Injury risk'}">⚠️ INJURY RISK</span>` : ''}
         </div>
         <div class="pick-simple-text">${simple}</div>
         <div class="pick-simple-meta">
@@ -1583,7 +1584,7 @@ function renderDegen() {
     const sideClass = p.side === "OVER" ? "over" : "under";
     return `<div class="degen-row">
       <div>
-        <div class="degen-player">${p.player}</div>
+        <div class="degen-player">${p.player}${p.injury_risk ? ' <span style="color:var(--red);font-size:.7rem" title="Listed day-to-day — minutes uncertain">⚠️ INJ</span>' : ''}</div>
         <div class="degen-sub">${p.stat_label} · best @ ${p.best_book.toUpperCase()}</div>
       </div>
       <div style="text-align:center">
