@@ -595,7 +595,9 @@ async function checkHealth() {
     pill.textContent = "⬤ Live · " + (h.cache_rows||0).toLocaleString() + " rows";
     try {
       const info = await apiGet("/model/info");
-      const acc = info.evaluation?.accuracy;
+      // Use the honest headline accuracy (CV mean), not the single-slice
+      // holdout which historically over-claimed.
+      const acc = info.headline_accuracy ?? info.cv?.accuracy_mean ?? info.evaluation?.accuracy;
       if(acc) document.getElementById("m-acc").textContent = (acc*100).toFixed(1)+"%";
     } catch(e){}
     return true;

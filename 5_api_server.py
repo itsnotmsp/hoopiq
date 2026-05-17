@@ -254,10 +254,20 @@ async def health():
 
 @app.get("/model/info")
 async def model_info():
+    er = state.eval_report or {}
+    cv_summary = (er.get("cv") or {}).get("summary", {})
+    # Headline accuracy = CV mean (honest generalization estimate), falling
+    # back to holdout only if CV is unavailable. The old code surfaced the
+    # single-slice holdout, which over-claimed by ~7 points.
+    headline = er.get("headline_accuracy")
+    if headline is None:
+        headline = cv_summary.get("accuracy_mean") or (er.get("holdout") or {}).get("accuracy")
     return {
         "n_features": len(state.feature_cols),
-        "evaluation": state.eval_report.get("holdout",{}),
-        "cv": (state.eval_report.get("cv") or {}).get("summary", {}),
+        "headline_accuracy": headline,
+        "headline_source": er.get("headline_source", "cv_mean"),
+        "evaluation": er.get("holdout", {}),   # kept for transparency / debugging
+        "cv": cv_summary,
         "prop_models": {e["target"]: {"mae": e["mae"], "r2": e["r2"]} for e in state.prop_eval} if state.prop_eval else {},
     }
 
@@ -311,7 +321,7 @@ async def predict_batch(req: BatchPredictRequest):
             "predicted_winner": winner, "confidence": confidence_label(max(home_prob, away_prob)),
             "spread": g["spread"], "over_under": g["over_under"], "status": g["status"],
         })
-    return {"date": game_date, "predictions": results, "model_accuracy_season": (state.eval_report.get("holdout") or {}).get("accuracy")}
+    return {"date": game_date, "predictions": results, "model_accuracy_season": (state.eval_report.get("headline_accuracy") or (state.eval_report.get("cv") or {}).get("summary",{}).get("accuracy_mean"))}
 
 
 @app.get("/predict/live")
@@ -1324,7 +1334,7 @@ async def predict_batch_with_reasoning(req: BatchPredictRequest):
     return {
         "date": game_date,
         "predictions": results,
-        "model_accuracy_season": (state.eval_report.get("holdout") or {}).get("accuracy"),
+        "model_accuracy_season": (state.eval_report.get("headline_accuracy") or (state.eval_report.get("cv") or {}).get("summary",{}).get("accuracy_mean")),
     }
 
 

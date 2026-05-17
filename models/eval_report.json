@@ -1,10 +1,11 @@
 {
   "holdout": {
-    "accuracy": 0.7039,
-    "auc": 0.7747,
-    "log_loss": 0.5585,
-    "brier": 0.1893,
-    "n_samples": 493
+    "accuracy": 0.6815,
+    "auc": 0.7385,
+    "log_loss": 0.675,
+    "brier": 0.2105,
+    "n_samples": 493,
+    "leakage_free": true
   },
   "cv": {
     "folds": [
@@ -12,56 +13,58 @@
         "fold": 1,
         "n_train": 818,
         "n_test": 820,
-        "accuracy": 0.5927,
-        "auc": 0.6036,
-        "log_loss": 0.7247,
-        "brier": 0.2566
+        "accuracy": 0.5951,
+        "auc": 0.6002,
+        "log_loss": 0.7255,
+        "brier": 0.2576
       },
       {
         "fold": 2,
         "n_train": 1638,
         "n_test": 820,
-        "accuracy": 0.6378,
-        "auc": 0.6883,
-        "log_loss": 0.6587,
-        "brier": 0.23
+        "accuracy": 0.6317,
+        "auc": 0.6897,
+        "log_loss": 0.6568,
+        "brier": 0.2293
       },
       {
         "fold": 3,
         "n_train": 2458,
         "n_test": 820,
-        "accuracy": 0.6146,
-        "auc": 0.6394,
-        "log_loss": 0.7019,
-        "brier": 0.2471
+        "accuracy": 0.6012,
+        "auc": 0.6413,
+        "log_loss": 0.6983,
+        "brier": 0.2463
       },
       {
         "fold": 4,
         "n_train": 3278,
         "n_test": 820,
-        "accuracy": 0.6549,
-        "auc": 0.6961,
-        "log_loss": 0.6432,
-        "brier": 0.2235
+        "accuracy": 0.6537,
+        "auc": 0.6996,
+        "log_loss": 0.6414,
+        "brier": 0.2224
       },
       {
         "fold": 5,
         "n_train": 4098,
         "n_test": 820,
-        "accuracy": 0.6463,
-        "auc": 0.6964,
-        "log_loss": 0.6382,
-        "brier": 0.2213
+        "accuracy": 0.6402,
+        "auc": 0.6996,
+        "log_loss": 0.6341,
+        "brier": 0.22
       }
     ],
     "summary": {
-      "accuracy_mean": 0.6293,
-      "accuracy_std": 0.0227,
-      "auc_mean": 0.6648,
-      "logloss_mean": 0.6733,
-      "brier_mean": 0.2357
+      "accuracy_mean": 0.6244,
+      "accuracy_std": 0.0226,
+      "auc_mean": 0.6661,
+      "logloss_mean": 0.6712,
+      "brier_mean": 0.2351
     }
   },
+  "headline_accuracy": 0.6244,
+  "headline_source": "cv_mean",
   "params": {
     "n_estimators": 600,
     "max_depth": 5,

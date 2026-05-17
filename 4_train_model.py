@@ -154,32 +154,50 @@ def time_series_cv(df: pd.DataFrame, feature_cols: list[str], target: str, n_spl
 # Train final model on all data + calibrate probabilities
 # ---------------------------------------------------------------------------
 
-def train_final(df: pd.DataFrame, feature_cols: list[str], target: str) -> xgb.XGBClassifier:
-    console.print("\nTraining final model on full dataset...")
+def train_final(df: pd.DataFrame, feature_cols: list[str], target: str):
+    """
+    Chronological THREE-way split to avoid calibration leakage:
+      - train     [0   : 80%]  — fits the XGBoost model
+      - calibrate  [80% : 90%]  — fits the isotonic calibrator (model is prefit)
+      - holdout    [90% : 100%] — NEVER seen by model or calibrator; the only
+                                  honest estimate of real-world accuracy
+
+    Previously the calibrator was fit AND evaluated on the same 10% slice,
+    which inflated reported holdout accuracy by ~7 points vs. true CV.
+    """
     X = df[feature_cols].values
     y = df[target].values
 
-    # Hold out last 10% for final sanity check (chronological)
-    split = int(len(X) * 0.90)
-    X_train, X_val = X[:split], X[split:]
-    y_train, y_val = y[:split], y[split:]
+    n = len(X)
+    train_end = int(n * 0.80)
+    cal_end   = int(n * 0.90)
+
+    X_train, y_train = X[:train_end],          y[:train_end]
+    X_cal,   y_cal   = X[train_end:cal_end],   y[train_end:cal_end]
+    X_hold,  y_hold  = X[cal_end:],            y[cal_end:]
+
+    console.print(
+        f"[dim]Split → train {len(y_train)} | calibrate {len(y_cal)} | "
+        f"holdout {len(y_hold)} (holdout is untouched by both)[/dim]"
+    )
 
     model = xgb.XGBClassifier(**DEFAULT_PARAMS)
     model.fit(
         X_train, y_train,
-        eval_set=[(X_val, y_val)],
+        eval_set=[(X_cal, y_cal)],   # early-stopping watches the cal slice, not holdout
         verbose=100,
     )
 
-    val_probs = model.predict_proba(X_val)[:, 1]
+    val_probs = model.predict_proba(X_hold)[:, 1]
     val_preds = (val_probs >= 0.5).astype(int)
     console.print(
-        f"\n[dim]Holdout (raw, uncalibrated): {accuracy_score(y_val, val_preds):.3f}  "
-        f"AUC: {roc_auc_score(y_val, val_probs):.3f} — "
-        f"calibrated number printed below in 'Saved' section is what the API uses.[/dim]"
+        f"\n[dim]Holdout (raw, uncalibrated): {accuracy_score(y_hold, val_preds):.3f}  "
+        f"AUC: {roc_auc_score(y_hold, val_probs):.3f} — "
+        f"calibrated number printed below is what the API uses.[/dim]"
     )
 
-    return model, X_val, y_val
+    # Return BOTH the calibration slice and the untouched holdout separately.
+    return model, (X_cal, y_cal), (X_hold, y_hold)
 
 
 # ---------------------------------------------------------------------------
@@ -235,8 +253,14 @@ def save_artifacts(model, calibrated, feature_cols: list[str], cv_results: dict,
             "log_loss": round(log_loss(y_val, probs), 4),
             "brier": round(brier_score_loss(y_val, probs), 4),
             "n_samples": len(y_val),
+            "leakage_free": True,  # holdout untouched by model AND calibrator
         },
         "cv": cv_results,
+        # The number to trust / display. CV is the most honest generalization
+        # estimate; holdout is a single-slice sanity check. We surface CV mean
+        # as the headline so the dashboard stops over-claiming.
+        "headline_accuracy": round(cv_results["summary"]["accuracy_mean"], 4),
+        "headline_source": "cv_mean",
         "params": DEFAULT_PARAMS,
         "n_features": len(feature_cols),
     }
@@ -326,9 +350,9 @@ if __name__ == "__main__":
         DEFAULT_PARAMS.update(best_params)
 
     cv_results = time_series_cv(df, feature_cols, target)
-    model, X_val, y_val = train_final(df, feature_cols, target)
+    model, (X_cal, y_cal), (X_hold, y_hold) = train_final(df, feature_cols, target)
     print_importance(model, feature_cols)
-    calibrated = calibrate(model, X_val, y_val)
-    save_artifacts(model, calibrated, feature_cols, cv_results, X_val, y_val)
+    calibrated = calibrate(model, X_cal, y_cal)            # fit on CAL slice
+    save_artifacts(model, calibrated, feature_cols, cv_results, X_hold, y_hold)  # eval on HOLDOUT
 
     console.print("\n[bold orange1]Training complete! Run python 5_api_server.py to serve predictions.[/bold orange1]")
