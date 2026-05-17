@@ -1,26 +1,42 @@
 [
   {
     "target": "PTS",
-    "mae": 4.446,
-    "r2": 0.426,
-    "n_val": 4440
+    "mae": 4.726,
+    "r2": 0.453,
+    "r2_std": 0.04,
+    "holdout_mae": 4.417,
+    "holdout_r2": 0.431,
+    "n_val": 4448,
+    "metric_source": "cv_mean"
   },
   {
     "target": "REB",
-    "mae": 1.925,
-    "r2": 0.426,
-    "n_val": 4440
+    "mae": 1.958,
+    "r2": 0.377,
+    "r2_std": 0.052,
+    "holdout_mae": 1.916,
+    "holdout_r2": 0.429,
+    "n_val": 4448,
+    "metric_source": "cv_mean"
   },
   {
     "target": "AST",
-    "mae": 1.224,
-    "r2": 0.316,
-    "n_val": 4440
+    "mae": 1.377,
+    "r2": 0.445,
+    "r2_std": 0.033,
+    "holdout_mae": 1.219,
+    "holdout_r2": 0.319,
+    "n_val": 4448,
+    "metric_source": "cv_mean"
   },
   {
     "target": "FPTS",
-    "mae": 7.493,
-    "r2": 0.482,
-    "n_val": 4420
+    "mae": 7.65,
+    "r2": 0.499,
+    "r2_std": 0.048,
+    "holdout_mae": 7.45,
+    "holdout_r2": 0.487,
+    "n_val": 4428,
+    "metric_source": "cv_mean"
   }
 ]

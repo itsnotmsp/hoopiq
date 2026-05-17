@@ -153,6 +153,74 @@ def engineer_features(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         df["OPP_PTS_ALLOWED"] = df.apply(get_opp_pts_allowed, axis=1)
         feat_cols.append("OPP_PTS_ALLOWED")
 
+        # ── NEW #1: Opponent PACE (possessions ≈ counting-stat opportunity) ──
+        # More possessions → more shots/rebounds/assists available to everyone.
+        # Pace ≈ FGA + 0.44*FTA - OREB + TOV  (standard possessions estimate).
+        if all(c in team_df.columns for c in ["FGA","FTA","OREB","TOV"]):
+            team_df["POSS"] = (
+                team_df["FGA"] + 0.44*team_df["FTA"]
+                - team_df["OREB"] + team_df["TOV"]
+            )
+            opp_pace = (
+                team_df.groupby(["TEAM_ABBREVIATION","GAME_DATE"])["POSS"]
+                .mean().reset_index()
+            )
+            pace_roll = {}
+            for team, grp in opp_pace.groupby("TEAM_ABBREVIATION"):
+                grp = grp.sort_values("GAME_DATE")
+                pace_roll[team] = (grp.set_index("GAME_DATE")["POSS"]
+                                   .rolling(5, min_periods=2).mean().shift(1))
+
+            def get_opp_pace(row):
+                opp = row.get("OPP","")
+                date = row["GAME_DATE"]
+                if opp in pace_roll:
+                    s = pace_roll[opp]
+                    idx = s.index.searchsorted(date, side="left")
+                    if idx > 0:
+                        return float(s.iloc[idx-1])
+                return 99.0  # league-average possessions
+            df["OPP_PACE"] = df.apply(get_opp_pace, axis=1)
+            feat_cols.append("OPP_PACE")
+
+    # ── NEW #2: Usage / role trend (heating up vs cooling down) ──
+    # ROLL3 / ROLL10 ratio per stat. >1 = recent role expanding, <1 = shrinking.
+    # Captures rotation changes the season-long average misses.
+    for col in ["PTS", "MIN", "FGA"]:
+        r3, r10 = f"ROLL3_{col}", f"ROLL10_{col}"
+        if r3 in df.columns and r10 in df.columns:
+            tname = f"TREND_{col}"
+            df[tname] = (df[r3] / df[r10].replace(0, np.nan)).clip(0.3, 3.0).fillna(1.0)
+            feat_cols.append(tname)
+
+    # ── NEW #3: Player back-to-back & heavy schedule ──
+    # Stars often see reduced minutes on the 2nd night of a B2B.
+    df["IS_B2B"] = (df["REST_DAYS"] <= 1).astype(int)
+    feat_cols.append("IS_B2B")
+    df["GAMES_LAST_7D"] = (
+        df.groupby("PLAYER_ID")["GAME_DATE"]
+        .transform(lambda s: s.diff().dt.days.le(7).rolling(4, min_periods=1).sum())
+        .fillna(0)
+    )
+    feat_cols.append("GAMES_LAST_7D")
+
+    # ── NEW #4: Minutes-anchored expectation ──
+    # Counting stats scale ~linearly with minutes. Anchor on a robust
+    # minutes estimate (recent + season blend) so a minutes change moves
+    # the projection directly instead of being one weak signal among many.
+    if "ROLL5_MIN" in df.columns and "ROLL10_MIN" in df.columns:
+        df["MIN_PROJ"] = (0.6*df["ROLL5_MIN"] + 0.4*df["ROLL10_MIN"]).fillna(
+            df.get("ROLL10_MIN", 0)
+        )
+        feat_cols.append("MIN_PROJ")
+        # Per-minute production rate (last 5) — separates rate from volume.
+        for col in ["PTS", "REB", "AST"]:
+            r5 = f"ROLL5_{col}"
+            if r5 in df.columns:
+                rate = f"{col}_PER_MIN"
+                df[rate] = (df[r5] / df["ROLL5_MIN"].replace(0, np.nan)).clip(0, 2.0).fillna(0)
+                feat_cols.append(rate)
+
     df[feat_cols] = df[feat_cols].fillna(0.0)
     console.print(f"  {len(feat_cols)} features built")
     return df, feat_cols
@@ -166,6 +234,34 @@ def train_prop_model(df: pd.DataFrame, target: str, feat_cols: list[str]) -> dic
     X = valid[feat_cols].values
     y = valid[target].values
 
+    # ── Time-series cross-validation (honest generalization estimate) ──
+    # Single-split R² can be optimistic or pessimistic depending on which
+    # slice you happen to test on — same lesson as the game-model leak fix.
+    # 5 expanding-window folds give the real picture.
+    tscv = TimeSeriesSplit(n_splits=5)
+    cv_maes, cv_r2s = [], []
+    for fold, (tr, te) in enumerate(tscv.split(X), 1):
+        m = xgb.XGBRegressor(**XGB_PARAMS)
+        m.fit(X[tr], y[tr], eval_set=[(X[te], y[te])], verbose=False)
+        p = m.predict(X[te])
+        fold_mae = mean_absolute_error(y[te], p)
+        fold_r2  = r2_score(y[te], p)
+        cv_maes.append(fold_mae)
+        cv_r2s.append(fold_r2)
+        console.print(
+            f"  Fold {fold}: MAE={fold_mae:.2f}  R²={fold_r2:.3f}  (n={len(te):,})"
+        )
+
+    cv_mae  = float(np.mean(cv_maes))
+    cv_r2   = float(np.mean(cv_r2s))
+    cv_r2_sd = float(np.std(cv_r2s))
+    console.print(
+        f"  [bold]CV mean: MAE=[green]{cv_mae:.2f}[/green]  "
+        f"R²=[green]{cv_r2:.3f}[/green] ± {cv_r2_sd:.3f}[/bold]  ← honest number"
+    )
+
+    # Final model: train on first 85% chronologically, validate last 15% as a
+    # last sanity check, then ship. CV mean above is the number to trust.
     split = int(len(X) * 0.85)
     X_train, X_val = X[:split], X[split:]
     y_train, y_val = y[:split], y[split:]
@@ -177,12 +273,24 @@ def train_prop_model(df: pd.DataFrame, target: str, feat_cols: list[str]) -> dic
     mae = mean_absolute_error(y_val, preds)
     r2  = r2_score(y_val, preds)
 
-    console.print(f"  MAE: [green]{mae:.2f}[/green]  R²: [green]{r2:.3f}[/green]  (n={len(X_val):,})")
+    console.print(
+        f"  Single-split holdout: MAE={mae:.2f}  R²={r2:.3f}  (n={len(X_val):,}) "
+        f"[dim](sanity only — trust the CV mean)[/dim]"
+    )
 
     path = MODEL_DIR / f"prop_{target.lower()}.json"
     model.save_model(str(path))
 
-    return {"target": target, "mae": round(mae,3), "r2": round(r2,3), "n_val": len(X_val)}
+    return {
+        "target": target,
+        "mae": round(cv_mae, 3),          # report CV as the headline
+        "r2": round(cv_r2, 3),
+        "r2_std": round(cv_r2_sd, 3),
+        "holdout_mae": round(mae, 3),     # kept for transparency
+        "holdout_r2": round(r2, 3),
+        "n_val": len(X_val),
+        "metric_source": "cv_mean",
+    }
 
 
 def print_importance(target: str, feat_cols: list[str]) -> None:
