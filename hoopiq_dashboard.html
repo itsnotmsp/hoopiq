@@ -598,7 +598,7 @@ async function checkHealth() {
       // Use the honest headline accuracy (CV mean), not the single-slice
       // holdout which historically over-claimed.
       const acc = info.headline_accuracy ?? info.cv?.accuracy_mean ?? info.evaluation?.accuracy;
-      if(acc) document.getElementById("m-acc").textContent = (acc*100).toFixed(1)+"%";
+      if(acc) { window.__modelAcc = acc; document.getElementById("m-acc").textContent = (acc*100).toFixed(1)+"%"; }
     } catch(e){}
     return true;
   } catch(e) {
@@ -809,7 +809,7 @@ function showGamePred(i,res,g) {
       </div>
       ${reasoningHtml}
       <button class="log-btn" id="log-btn-${i}" onclick='logGamePred(${i}, ${JSON.stringify(res).replace(/'/g, "&#39;")})'>+ Track this prediction</button>
-      <div class="model-tag">XGBoost v2 · 69.2% accuracy</div>
+      <div class="model-tag">XGBoost · ${window.__modelAcc ? (window.__modelAcc*100).toFixed(1) : '—'}% accuracy (CV)</div>
     </div>`;
   setTimeout(()=>{const el=document.getElementById("cf-"+i);if(el)el.style.width=Math.max(hp,ap)+"%"},60);
 }
@@ -817,7 +817,7 @@ function showGamePred(i,res,g) {
 async function batchPredict() {
   try {
     const res=await apiPost("/predict/batch",{});
-    if(res.model_accuracy_season) document.getElementById("m-acc").textContent=(res.model_accuracy_season*100).toFixed(1)+"%";
+    if(res.model_accuracy_season) { window.__modelAcc = res.model_accuracy_season; document.getElementById("m-acc").textContent=(res.model_accuracy_season*100).toFixed(1)+"%"; }
     (res.predictions||[]).forEach(p=>{
       const idx=gamesData.findIndex(g=>g.home_abbr===p.home_team&&g.away_abbr===p.away_team);
       if(idx>=0){showGamePred(idx,p,gamesData[idx]);predCount++;}
