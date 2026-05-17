@@ -226,8 +226,62 @@ def engineer_features(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     return df, feat_cols
 
 
+def _cv_r2(X, y, n_splits=5):
+    """Mean time-series CV R² for a given feature matrix."""
+    tscv = TimeSeriesSplit(n_splits=n_splits)
+    scores = []
+    for tr, te in tscv.split(X):
+        m = xgb.XGBRegressor(**XGB_PARAMS)
+        m.fit(X[tr], y[tr], eval_set=[(X[te], y[te])], verbose=False)
+        scores.append(r2_score(y[te], m.predict(X[te])))
+    return float(np.mean(scores))
+
+
+# The four features added in the pace/usage/B2B/minutes upgrade. Some help
+# certain stats (AST loves pace+usage) and hurt others (REB regressed with
+# them). We test per-stat and keep them only if CV says they help THAT stat.
+NEW_FEATURE_PREFIXES = ("OPP_PACE", "TREND_", "IS_B2B", "GAMES_LAST_7D",
+                        "MIN_PROJ", "_PER_MIN")
+
+
+def select_features_for_target(df: pd.DataFrame, target: str,
+                               feat_cols: list[str]) -> list[str]:
+    """
+    Per-stat feature selection. Compare CV R² with vs without the new
+    feature block. Keep the new features only if they don't hurt THIS stat.
+    This is why REB will automatically shed the features that regressed it
+    while AST keeps the ones that gave it +0.13 R².
+    """
+    valid = df.dropna(subset=[target])
+    valid = valid[valid[target] >= 0]
+    y = valid[target].values
+
+    base_cols = [c for c in feat_cols
+                 if not any(c.startswith(p) or c.endswith("_PER_MIN")
+                            for p in NEW_FEATURE_PREFIXES)]
+
+    full_r2 = _cv_r2(valid[feat_cols].values, y)
+    base_r2 = _cv_r2(valid[base_cols].values, y)
+
+    if full_r2 >= base_r2 - 0.002:   # new features help (or are neutral)
+        console.print(
+            f"  [{target}] full set CV R²={full_r2:.3f} ≥ base {base_r2:.3f} "
+            f"→ [green]keeping new features[/green]"
+        )
+        return feat_cols
+    else:
+        console.print(
+            f"  [{target}] full set CV R²={full_r2:.3f} < base {base_r2:.3f} "
+            f"→ [yellow]dropping new features for this stat[/yellow]"
+        )
+        return base_cols
+
+
 def train_prop_model(df: pd.DataFrame, target: str, feat_cols: list[str]) -> dict:
     console.print(f"\nTraining [cyan]{target}[/cyan] model...")
+
+    # Per-stat feature selection (fixes the REB regression automatically).
+    feat_cols = select_features_for_target(df, target, feat_cols)
 
     valid = df.dropna(subset=[target])
     valid = valid[valid[target] >= 0]
@@ -290,6 +344,7 @@ def train_prop_model(df: pd.DataFrame, target: str, feat_cols: list[str]) -> dic
         "holdout_r2": round(r2, 3),
         "n_val": len(X_val),
         "metric_source": "cv_mean",
+        "features": feat_cols,            # per-stat selected feature list
     }
 
 
@@ -328,8 +383,17 @@ def main():
         results.append(metrics)
         print_importance(target, feat_cols)
 
-    # Save feature list and eval
+    # Save feature lists. Each stat may use a different set now (REB drops
+    # the new features, AST keeps them), so we save BOTH a per-stat map and
+    # the union list (for backward-compat with anything reading the old key).
+    per_stat_features = {r["target"]: r["features"] for r in results}
     (MODEL_DIR / "prop_feature_list.json").write_text(json.dumps(feat_cols))
+    (MODEL_DIR / "prop_features_by_stat.json").write_text(
+        json.dumps(per_stat_features, indent=2)
+    )
+    # Strip the bulky feature list out of eval (keep eval readable)
+    for r in results:
+        r.pop("features", None)
     (MODEL_DIR / "prop_eval.json").write_text(json.dumps(results, indent=2))
 
     console.print("\n[bold green]All prop models saved:[/bold green]")

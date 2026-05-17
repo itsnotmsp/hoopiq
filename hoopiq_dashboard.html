@@ -1010,6 +1010,7 @@ async function loadTop10() {
   try {
     const data = await apiGet("/props/top10");
     top10Data = data.top_picks || [];
+    window.__propBiasWarning = data.bias_warning || null;
     const meta = `${data.games||0} games · ${data.total_candidates||0} candidates analyzed${data.vegas_lines_loaded?" · ✓ Vegas lines loaded":" · model only (no Vegas)"}`;
     document.getElementById("top10-meta").textContent = meta;
     renderTop10();
@@ -1039,7 +1040,11 @@ function renderTop10() {
     return;
   }
 
-  document.getElementById("top10-list").innerHTML = picks.map((p,i)=>{
+  const banner = window.__propBiasWarning
+    ? `<div style="padding:.9rem 1rem;margin-bottom:1rem;background:rgba(239,68,68,.10);border:1px solid rgba(239,68,68,.4);border-radius:var(--radius);color:#fca5a5;font-size:.85rem;line-height:1.5">${window.__propBiasWarning}</div>`
+    : "";
+
+  document.getElementById("top10-list").innerHTML = banner + picks.map((p,i)=>{
     const rank = top10Data.indexOf(p) + 1;
     const rankClass = rank===1?"top1":rank===2?"top2":rank===3?"top3":"";
     const rec = p.recommendation || "";

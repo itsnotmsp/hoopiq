@@ -97,6 +97,7 @@ class ModelState:
     game_log_cache = None
     prop_models: dict = {}
     prop_feat_cols: list = []
+    prop_features_by_stat: dict = {}
     prop_eval: list = []
     player_log_cache = None
     player_index: dict = {}
@@ -130,6 +131,8 @@ async def load_models():
 
     p = MODEL_DIR / "prop_feature_list.json"
     if p.exists(): state.prop_feat_cols = json.loads(p.read_text())
+    p = MODEL_DIR / "prop_features_by_stat.json"
+    if p.exists(): state.prop_features_by_stat = json.loads(p.read_text())
     p = MODEL_DIR / "prop_eval.json"
     if p.exists(): state.prop_eval = json.loads(p.read_text())
 
@@ -239,8 +242,18 @@ def build_player_features(player_name, opp_team, is_home, game_date):
     if state.game_log_cache is not None:
         opp_past = state.game_log_cache[(state.game_log_cache["TEAM_ABBREVIATION"]==opp_team)&(state.game_log_cache["GAME_DATE"]<cutoff)].tail(5)
         row["OPP_PTS_ALLOWED"] = opp_past["PTS"].mean() if len(opp_past)>=3 else 110.0
+    # Return the full feature dict. Per-stat models now use different feature
+    # subsets (REB dropped the pace/usage block, AST kept it), so the caller
+    # builds the right vector per model from prop_features_by_stat.
     vec = np.array([row.get(f, 0.0) for f in state.prop_feat_cols], dtype=np.float32)
-    return vec.reshape(1,-1)
+    return vec.reshape(1,-1), row
+
+
+def _vec_for_stat(row: dict, stat: str):
+    """Build the feature vector a specific prop model expects, using its
+    saved per-stat feature list. Falls back to the union list."""
+    feats = state.prop_features_by_stat.get(stat) or state.prop_feat_cols
+    return np.array([row.get(f, 0.0) for f in feats], dtype=np.float32).reshape(1, -1)
 
 
 def confidence_label(prob):
@@ -401,9 +414,11 @@ async def predict_live():
 async def predict_player_props(req: PropRequest):
     if not state.prop_models: raise HTTPException(503, "Prop models not loaded")
     game_date = req.date or date.today().isoformat()
-    features = build_player_features(req.player_name, req.opp_team, req.is_home, game_date)
-    if features is None: raise HTTPException(404, f"Player not found or insufficient history")
-    projections = {t: round(max(0, float(m.predict(features)[0])), 1) for t,m in state.prop_models.items()}
+    _fr = build_player_features(req.player_name, req.opp_team, req.is_home, game_date)
+    if _fr is None: raise HTTPException(404, f"Player not found or insufficient history")
+    _, _row = _fr
+    projections = {t: round(max(0, float(m.predict(_vec_for_stat(_row, t))[0])), 1)
+                   for t,m in state.prop_models.items()}
     lines = {"PTS": req.pts_line, "REB": req.reb_line, "AST": req.ast_line}
     prop_picks = {}
     for stat, line in lines.items():
@@ -453,12 +468,13 @@ async def fantasy_lineup(date_str: Optional[str] = None):
         if len(p_df)<5: continue
         team = p_df["PLAYER_TEAM"].iloc[-1]
         opp = team_to_opp.get(team,""); is_home = team_home.get(team, True)
-        features = build_player_features(name, opp, is_home, game_date)
-        if features is None: continue
-        proj_fpts = float(state.prop_models["FPTS"].predict(features)[0]) if "FPTS" in state.prop_models else 0
-        proj_pts = float(state.prop_models["PTS"].predict(features)[0]) if "PTS" in state.prop_models else 0
-        proj_reb = float(state.prop_models["REB"].predict(features)[0]) if "REB" in state.prop_models else 0
-        proj_ast = float(state.prop_models["AST"].predict(features)[0]) if "AST" in state.prop_models else 0
+        _fr = build_player_features(name, opp, is_home, game_date)
+        if _fr is None: continue
+        _, _row = _fr
+        proj_fpts = float(state.prop_models["FPTS"].predict(_vec_for_stat(_row,"FPTS"))[0]) if "FPTS" in state.prop_models else 0
+        proj_pts = float(state.prop_models["PTS"].predict(_vec_for_stat(_row,"PTS"))[0]) if "PTS" in state.prop_models else 0
+        proj_reb = float(state.prop_models["REB"].predict(_vec_for_stat(_row,"REB"))[0]) if "REB" in state.prop_models else 0
+        proj_ast = float(state.prop_models["AST"].predict(_vec_for_stat(_row,"AST"))[0]) if "AST" in state.prop_models else 0
         avg_fpts = float(p_df["FPTS"].tail(10).mean())
         ss = grade_start_sit(proj_fpts, avg_fpts)
         results.append({
@@ -559,9 +575,10 @@ async def top_picks(date_str: Optional[str] = None):
         if inj_state == "OUT":
             continue   # never recommend a prop for a player who isn't playing
         opp = team_to_opp.get(team,""); is_home = team_home.get(team, True)
-        features = build_player_features(name, opp, is_home, game_date)
-        if features is None: continue
-        projections = {s: float(m.predict(features)[0]) for s,m in state.prop_models.items()}
+        _fr = build_player_features(name, opp, is_home, game_date)
+        if _fr is None: continue
+        _, _row = _fr
+        projections = {s: float(m.predict(_vec_for_stat(_row, s))[0]) for s,m in state.prop_models.items()}
         last5 = p_df.tail(5); last10 = p_df.tail(10)
         for stat in ["PTS","REB","AST"]:
             if stat not in projections: continue
@@ -675,9 +692,34 @@ async def top_picks(date_str: Optional[str] = None):
                 }),
             })
     picks.sort(key=lambda p: (abs(p.get("edge_pct") or 0), p["confidence"], p["form"]["consistency"]), reverse=True)
+
+    # ── All-OVER sanity check ──
+    # If nearly every pick is OVER, the model is likely projecting high into
+    # conservative (shaded) sportsbook lines rather than finding real edges.
+    # A trustworthy slate is roughly balanced between overs and unders.
+    top = picks[:10]
+    over_n = sum(1 for p in top if (p.get("pick") or "").upper() == "OVER")
+    bias_warning = None
+    if len(top) >= 5:
+        over_frac = over_n / len(top)
+        if over_frac >= 0.85:
+            bias_warning = (
+                f"⚠️ {over_n}/{len(top)} picks are OVER. Sportsbooks shade prop "
+                f"lines low and juice the over. An all-OVER slate usually means "
+                f"the model is projecting high into shaded lines, NOT finding real "
+                f"edges. Treat these as low-trust — bet tiny or skip."
+            )
+        elif over_frac <= 0.15:
+            bias_warning = (
+                f"⚠️ {len(top)-over_n}/{len(top)} picks are UNDER — unusually "
+                f"one-sided. Same caution as an all-OVER slate."
+            )
+
     return {"date": game_date, "games": len(games),
             "vegas_lines_loaded": len(vegas_lines)>0,
-            "total_candidates": len(picks), "top_picks": picks[:10]}
+            "over_count": over_n, "slate_size": len(top),
+            "bias_warning": bias_warning,
+            "total_candidates": len(picks), "top_picks": top}
 
 
 @app.get("/props/degen")
