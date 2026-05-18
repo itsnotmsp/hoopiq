@@ -226,10 +226,17 @@ def parse_gamelog(raw, athlete):
                 tov = _to_float(stat_map.get("TO"))
                 pts = pts_raw
 
-                # ESPN gamelog rarely includes OREB/DREB split. Set OREB=0 and DREB=REB
-                # so downstream code that reads either column still works.
-                oreb = 0.0
-                dreb = reb
+                # ESPN gamelog only provides TOTAL rebounds, not the
+                # offensive/defensive split. Previously this fabricated
+                # DREB=REB, OREB=0 — a FALSE signal (claims every rebound was
+                # defensive) that added noise to any feature using these.
+                # Instead use the league-average split (~22% offensive) as a
+                # neutral estimate, and flag it so the model can be told these
+                # are derived, not measured. The prop model drops these from
+                # its feature set entirely (see REB_SPLIT_ESTIMATED).
+                oreb = round(reb * 0.22, 1)
+                dreb = round(reb * 0.78, 1)
+                reb_split_estimated = 1
 
                 # DraftKings fantasy points
                 fpts = pts * 1.0 + reb * 1.25 + ast * 1.5 + stl * 2.0 + blk * 2.0 - tov * 0.5
@@ -262,8 +269,9 @@ def parse_gamelog(raw, athlete):
                     "FG3A":        int(fg3a),
                     "FTM":         int(ftm),
                     "FTA":         int(fta),
-                    "OREB":        int(oreb),
-                    "DREB":        int(dreb),
+                    "OREB":        round(oreb, 1),
+                    "DREB":        round(dreb, 1),
+                    "REB_SPLIT_ESTIMATED": reb_split_estimated,
                     "FPTS":        round(fpts, 2),
                 })
 

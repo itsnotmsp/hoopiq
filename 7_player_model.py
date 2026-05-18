@@ -57,6 +57,29 @@ XGB_PARAMS = {
     "tree_method": "hist",
 }
 
+# AST was overfitting badly: CV R² 0.445 but holdout only 0.319 (0.13 gap —
+# the worst of any stat). Assists are noisier and more context-dependent, so
+# the model memorizes training patterns that don't generalize. Counter it with
+# stronger regularization: shallower trees, larger leaves, heavier L1/L2,
+# lower learning rate. Goal is to CLOSE the CV/holdout gap even if CV drops
+# slightly — an honest 0.36 that generalizes beats a fake 0.45 that doesn't.
+PARAMS_BY_TARGET = {
+    "AST": {
+        **XGB_PARAMS,
+        "max_depth": 3,
+        "min_child_weight": 12,
+        "reg_alpha": 0.5,
+        "reg_lambda": 3.0,
+        "learning_rate": 0.03,
+        "subsample": 0.7,
+        "colsample_bytree": 0.6,
+    },
+}
+
+
+def params_for(target: str) -> dict:
+    return PARAMS_BY_TARGET.get(target, XGB_PARAMS)
+
 
 def load_player_logs() -> pd.DataFrame:
     path = DATA_DIR / "player_logs.parquet"
@@ -93,6 +116,22 @@ def engineer_features(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
             .transform(lambda x: x.shift(1).rolling(5, min_periods=2).std().fillna(0))
         )
         feat_cols.append(std_name)
+
+        # ── Exponentially-weighted recency (the "fresh data helps" effect) ──
+        # The user observed that re-pulling data right before games produced
+        # better results — that's because recent games matter far more than
+        # games from 3 weeks ago (role changes, rotation, form). A plain
+        # rolling mean treats game -1 and game -10 equally; EWM weights the
+        # most recent game heaviest and decays older ones. halflife=3 means a
+        # game 3 contests ago counts half as much as the last game. This bakes
+        # the recency effect into the MODEL so it self-corrects instead of
+        # relying on the user manually re-pulling.
+        ewm_name = f"EWM_{col}"
+        df[ewm_name] = (
+            df.groupby("PLAYER_ID")[col]
+            .transform(lambda x: x.shift(1).ewm(halflife=3, min_periods=2).mean())
+        )
+        feat_cols.append(ewm_name)
 
     # Rest days
     df["REST_DAYS"] = (
@@ -226,12 +265,13 @@ def engineer_features(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     return df, feat_cols
 
 
-def _cv_r2(X, y, n_splits=5):
+def _cv_r2(X, y, n_splits=5, target=None):
     """Mean time-series CV R² for a given feature matrix."""
     tscv = TimeSeriesSplit(n_splits=n_splits)
+    params = params_for(target) if target else XGB_PARAMS
     scores = []
     for tr, te in tscv.split(X):
-        m = xgb.XGBRegressor(**XGB_PARAMS)
+        m = xgb.XGBRegressor(**params)
         m.fit(X[tr], y[tr], eval_set=[(X[te], y[te])], verbose=False)
         scores.append(r2_score(y[te], m.predict(X[te])))
     return float(np.mean(scores))
@@ -260,8 +300,8 @@ def select_features_for_target(df: pd.DataFrame, target: str,
                  if not any(c.startswith(p) or c.endswith("_PER_MIN")
                             for p in NEW_FEATURE_PREFIXES)]
 
-    full_r2 = _cv_r2(valid[feat_cols].values, y)
-    base_r2 = _cv_r2(valid[base_cols].values, y)
+    full_r2 = _cv_r2(valid[feat_cols].values, y, target=target)
+    base_r2 = _cv_r2(valid[base_cols].values, y, target=target)
 
     if full_r2 >= base_r2 - 0.002:   # new features help (or are neutral)
         console.print(
@@ -293,9 +333,10 @@ def train_prop_model(df: pd.DataFrame, target: str, feat_cols: list[str]) -> dic
     # slice you happen to test on — same lesson as the game-model leak fix.
     # 5 expanding-window folds give the real picture.
     tscv = TimeSeriesSplit(n_splits=5)
+    _params = params_for(target)
     cv_maes, cv_r2s = [], []
     for fold, (tr, te) in enumerate(tscv.split(X), 1):
-        m = xgb.XGBRegressor(**XGB_PARAMS)
+        m = xgb.XGBRegressor(**_params)
         m.fit(X[tr], y[tr], eval_set=[(X[te], y[te])], verbose=False)
         p = m.predict(X[te])
         fold_mae = mean_absolute_error(y[te], p)
@@ -320,7 +361,7 @@ def train_prop_model(df: pd.DataFrame, target: str, feat_cols: list[str]) -> dic
     X_train, X_val = X[:split], X[split:]
     y_train, y_val = y[:split], y[split:]
 
-    model = xgb.XGBRegressor(**XGB_PARAMS)
+    model = xgb.XGBRegressor(**_params)
     model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
 
     preds = model.predict(X_val)
