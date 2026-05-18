@@ -232,6 +232,43 @@ def build_player_features(player_name, opp_team, is_home, game_date):
         if c not in past.columns: continue
         for w in [3,5,10]: row[f"ROLL{w}_{c}"] = past[c].tail(w).mean()
         row[f"STD5_{c}"] = past[c].tail(5).std() if len(past)>=5 else 0.0
+        # EWM recency feature — MUST match training:
+        #   training = groupby(PLAYER).transform(x.shift(1).ewm(halflife=3,
+        #              min_periods=2).mean()) then the row's value.
+        # `past` is already all games strictly before the cutoff (= shift(1)),
+        # so the EWM of past[c] with halflife=3 and its LAST value reproduces
+        # the training-time number exactly. Omitting this was the bug that
+        # made every projection ~half the player's real average.
+        if len(past) >= 2:
+            row[f"EWM_{c}"] = past[c].ewm(halflife=3, min_periods=2).mean().iloc[-1]
+        else:
+            row[f"EWM_{c}"] = past[c].mean()
+
+    # TREND_* = ROLL3 / ROLL10 ratio (role expanding vs shrinking), clipped
+    # to [0.3, 3.0] then NaN→1.0, exactly as in training.
+    for c in ["PTS", "MIN", "FGA"]:
+        r3, r10 = row.get(f"ROLL3_{c}"), row.get(f"ROLL10_{c}")
+        if r3 is not None and r10:
+            row[f"TREND_{c}"] = float(np.clip(r3 / r10, 0.3, 3.0)) if r10 else 1.0
+        else:
+            row[f"TREND_{c}"] = 1.0
+
+    # Player schedule/fatigue (training: REST_DAYS<=1 → B2B; games in last 7d)
+    last_date = past["GAME_DATE"].iloc[-1]
+    _rest = min((cutoff - last_date).days, 10)
+    row["IS_B2B"] = int(_rest <= 1)
+    row["GAMES_LAST_7D"] = int((past["GAME_DATE"] >= (cutoff - pd.Timedelta(days=7))).sum())
+
+    # Minutes anchor + per-minute production rates (training formulas exactly)
+    r5m, r10m = row.get("ROLL5_MIN"), row.get("ROLL10_MIN")
+    if r5m is not None and r10m is not None:
+        row["MIN_PROJ"] = 0.6*r5m + 0.4*r10m
+        for c in ["PTS", "REB", "AST"]:
+            r5 = row.get(f"ROLL5_{c}")
+            if r5 is not None and r5m:
+                row[f"{c}_PER_MIN"] = float(np.clip(r5 / r5m, 0, 2.0)) if r5m else 0.0
+            else:
+                row[f"{c}_PER_MIN"] = 0.0
     row["REST_DAYS"] = min((cutoff - past["GAME_DATE"].iloc[-1]).days, 10)
     row["IS_HOME"] = int(is_home)
     row["GAME_NUM"] = len(past) + 1
@@ -242,6 +279,16 @@ def build_player_features(player_name, opp_team, is_home, game_date):
     if state.game_log_cache is not None:
         opp_past = state.game_log_cache[(state.game_log_cache["TEAM_ABBREVIATION"]==opp_team)&(state.game_log_cache["GAME_DATE"]<cutoff)].tail(5)
         row["OPP_PTS_ALLOWED"] = opp_past["PTS"].mean() if len(opp_past)>=3 else 110.0
+        # OPP_PACE: possessions ≈ FGA + 0.44*FTA - OREB + TOV, last-5 mean.
+        # Matches training; default to league-average 99 if data missing.
+        if len(opp_past) >= 2 and all(c in opp_past.columns for c in ["FGA","FTA","OREB","TOV"]):
+            poss = (opp_past["FGA"] + 0.44*opp_past["FTA"]
+                    - opp_past["OREB"] + opp_past["TOV"])
+            row["OPP_PACE"] = float(poss.mean())
+        else:
+            row["OPP_PACE"] = 99.0
+    else:
+        row["OPP_PACE"] = 99.0
     # Return the full feature dict. Per-stat models now use different feature
     # subsets (REB dropped the pace/usage block, AST kept it), so the caller
     # builds the right vector per model from prop_features_by_stat.
