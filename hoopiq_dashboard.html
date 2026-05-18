@@ -316,6 +316,9 @@ nav{display:flex;gap:2px}
 .an-best-bet-title{font-size:11px;color:var(--green);font-family:'DM Mono',monospace;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
 .an-best-bet-text{font-family:'Bebas Neue',sans-serif;font-size:24px;letter-spacing:1px;color:var(--text)}
 .an-best-bet-edge{font-size:12px;color:var(--green);font-family:'DM Mono',monospace;margin-top:4px}
+.an-track-btn{margin-top:12px;padding:.6rem 1rem;background:var(--accent);color:#000;border:none;
+              border-radius:var(--radius-sm);font-weight:600;cursor:pointer;font-size:.85rem;width:100%}
+.an-track-btn:hover{filter:brightness(1.1)}
 
 .an-risk{background:rgba(239,68,68,.08);border-left:3px solid var(--red);padding:.6rem 1rem;font-size:12px;color:var(--text);margin-bottom:6px;border-radius:6px}
 
@@ -1619,6 +1622,43 @@ function renderDegen() {
   }).join("");
 }
 
+function trackDeepBet(info) {
+  // Logs from Deep Analysis. Crucially defaults to the VALUE side (the
+  // "Best bet"), which can differ from the model's predicted winner —
+  // e.g. model likes DET to win but CLE is the actual value bet.
+  const m = info.market || {};
+  const best = info.best || {};
+  const homeML = m.ml_home_decimal || m.home_ml_decimal || null;
+  const awayML = m.ml_away_decimal || m.away_ml_decimal || null;
+
+  const bestStr = (best.side || "").toUpperCase();
+  const homeIsValue = bestStr.includes((info.homeAbbr || "").toUpperCase())
+                   || bestStr.includes((info.home || "").toUpperCase());
+
+  openBetModal({
+    title: `${info.awayAbbr} @ ${info.homeAbbr}`,
+    sub: `Model: ${info.pred.winner} @ ${info.pred.confidence_pct}% · Best bet: ${best.type} ${best.side} (${best.verdict})`,
+    sides: [
+      { label: `HOME ${info.homeAbbr}`, value: info.homeAbbr,
+        name: `${info.homeAbbr} ML`, odds: homeML },
+      { label: `AWAY ${info.awayAbbr}`, value: info.awayAbbr,
+        name: `${info.awayAbbr} ML`, odds: awayML },
+    ],
+    basePayload: {
+      type: "game",
+      matchup: `${info.awayAbbr} @ ${info.homeAbbr}`,
+      predicted_winner: info.pred.winner,
+      home_win_prob: (info.pred.confidence_pct || 0) / 100,
+      away_win_prob: 1 - (info.pred.confidence_pct || 0) / 100,
+      confidence: info.pred.confidence_pct,
+      notes: `Deep Analysis best bet: ${best.type} ${best.side} · ${best.verdict}`
+              + (best.edge ? ` · edge ${best.edge}` : ""),
+    },
+  });
+  // Pre-select the VALUE side (Best Bet), not the model's predicted winner.
+  pickBetSide(homeIsValue ? 0 : 1);
+}
+
 function logDegenPick(p) {
   // Reuse the existing bet modal — pre-fill side, odds, and a smaller default
   // stake ($25) since degen picks are inherently riskier.
@@ -1725,6 +1765,11 @@ function renderAnalysis(d) {
       <div class="an-best-bet-title">⭐ Best bet</div>
       <div class="an-best-bet-text">${best.type}: ${best.side}</div>
       <div class="an-best-bet-edge">${best.verdict}${best.edge ? ` · ${best.edge>0?"+":""}${best.edge}` : ""}</div>
+      <button class="an-track-btn" onclick='trackDeepBet(${JSON.stringify({
+        home: homeTeam, away: awayTeam, homeAbbr: d.home_abbr || homeTeam,
+        awayAbbr: d.away_abbr || awayTeam, best: best, market: market,
+        pred: p, date: d.date
+      }).replace(/'/g, "&#39;")})'>+ Track this bet</button>
     </div>` : ""}
 
     <div class="an-section">
