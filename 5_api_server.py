@@ -633,10 +633,44 @@ async def top_picks(date_str: Optional[str] = None):
             if proj < 5: continue
             avg10 = float(last10[stat].mean()); avg5 = float(last5[stat].mean())
             std5 = float(last5[stat].std()) if len(last5)>=3 else proj*0.2
-            form_trend = (avg5-avg10)/max(avg10,1.0)
-            consistency = 1.0 - min(std5/max(avg5,1.0), 1.0)
+            # Wider, more honest volatility read: spread over last 10 games,
+            # not just 5. A player like Wembanyama (4,39,19,27,19,...) has a
+            # huge std — his "average" describes none of his games and any
+            # projection is a meaningless midpoint of a bimodal range.
+            vals10 = last10[stat].dropna().astype(float)
+            std10 = float(vals10.std()) if len(vals10) >= 4 else std5
+            game_range = (float(vals10.max() - vals10.min())
+                          if len(vals10) >= 4 else std5 * 3)
+
             stat_key = {"PTS":"POINTS","REB":"REBOUNDS","AST":"ASSISTS"}[stat]
             vegas_line = vegas_lines.get((name.lower(), stat_key))
+
+            # ── UNPROJECTABLE-PLAYER FILTER ──
+            # The bet is only meaningful if the gap between projection and line
+            # is BIGGER than the player's own game-to-game noise. If a player
+            # swings ±13 pts night to night and the line is 4 pts from the
+            # projection, OVER/UNDER is a coin flip no matter how good the
+            # projection model is — the outcome lives entirely inside the
+            # noise. We REFUSE to emit a pick in that case rather than dress
+            # up a coin flip as "high confidence".
+            if vegas_line:
+                edge_abs = abs(proj - vegas_line)
+                # Require the edge to clear 75% of one standard deviation AND
+                # the player not to be wildly bimodal (range < 4x std would be
+                # roughly normal; far above that = explosive/dud pattern).
+                noise = max(std10, 1e-6)
+                if edge_abs < 0.75 * noise:
+                    continue  # edge drowned by the player's own variance
+                if game_range > 6.0 * noise and noise > 3.0:
+                    continue  # bimodal boom/bust player — unprojectable
+                # Hard volatility ceiling for scoring: a PTS std over ~9 means
+                # explosive scorers (stars who go 5 or 40). Skip unless the
+                # edge is enormous (line very far from projection).
+                if stat == "PTS" and std10 > 9.0 and edge_abs < 1.25 * std10:
+                    continue
+
+            form_trend = (avg5-avg10)/max(avg10,1.0)
+            consistency = 1.0 - min(std10/max(avg5,1.0), 1.0)
             edge = None; edge_pct = 0; pick_side = None
             if vegas_line:
                 edge = proj - vegas_line; edge_pct = (edge/vegas_line)*100 if vegas_line else 0
@@ -862,10 +896,20 @@ async def degen_props(
                 if stat_col not in last10.columns:
                     continue
                 values = last10[stat_col].astype(float).values
-                if len(values) < 5:
+                if len(values) < 8:
+                    # Empirical hit rate off <8 games is too noisy to trust,
+                    # especially for boom/bust players. Require a real sample.
                     continue
 
                 avg_l10 = float(values.mean())
+                std_l10 = float(values.std())
+                # Coefficient of variation: std relative to mean. A player
+                # with CV > ~0.6 is wildly inconsistent — a 10-game empirical
+                # hit rate is mostly which explosions happened to land in the
+                # window, not a real probability. Skip these entirely.
+                cv = std_l10 / max(avg_l10, 1.0)
+                if cv > 0.65:
+                    continue
 
                 for offer in info.get("lines", []):
                     point = offer.get("point")
