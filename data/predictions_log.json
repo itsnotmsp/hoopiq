@@ -1,5 +1,57 @@
 [
   {
+    "id": "pred_1779278652352",
+    "logged_at": "2026-05-20T12:04:12.352155+00:00",
+    "result": "PENDING",
+    "profit_loss": 0.0,
+    "type": "prop",
+    "matchup": "OKC vs SA",
+    "player": "Branden Carlson",
+    "stat": "PTS",
+    "pick": "OVER",
+    "line": 9.5,
+    "projection": 9.5
+  },
+  {
+    "id": "pred_1779278649246",
+    "logged_at": "2026-05-20T12:04:09.246975+00:00",
+    "result": "PENDING",
+    "profit_loss": 0.0,
+    "type": "prop",
+    "matchup": "SA vs OKC",
+    "player": "Victor Wembanyama",
+    "stat": "REB",
+    "pick": "OVER",
+    "line": 11.6,
+    "projection": 11.6
+  },
+  {
+    "id": "pred_1779278648277",
+    "logged_at": "2026-05-20T12:04:08.277537+00:00",
+    "result": "PENDING",
+    "profit_loss": 0.0,
+    "type": "prop",
+    "matchup": "OKC vs SA",
+    "player": "Cason Wallace",
+    "stat": "PTS",
+    "pick": "OVER",
+    "line": 7.0,
+    "projection": 7.0
+  },
+  {
+    "id": "pred_1779278648273",
+    "logged_at": "2026-05-20T12:04:08.273998+00:00",
+    "result": "PENDING",
+    "profit_loss": 0.0,
+    "type": "prop",
+    "matchup": "OKC vs SA",
+    "player": "Isaiah Hartenstein",
+    "stat": "PTS",
+    "pick": "OVER",
+    "line": 9.7,
+    "projection": 9.7
+  },
+  {
     "id": "pred_1778062474957",
     "logged_at": "2026-05-06T10:14:34.957522+00:00",
     "result": "PENDING",
