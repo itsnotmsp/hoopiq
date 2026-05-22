@@ -1,5 +1,37 @@
 [
   {
+    "id": "pred_1779443321862",
+    "logged_at": "2026-05-22T09:48:41.862159+00:00",
+    "result": "PENDING",
+    "profit_loss": 0.0,
+    "type": "prop",
+    "matchup": "OKC vs SA",
+    "player": "Alex Caruso",
+    "stat": "PTS",
+    "pick": "UNDER",
+    "line": 10.5,
+    "projection": 6.0
+  },
+  {
+    "id": "pred_1779443308707",
+    "logged_at": "2026-05-22T09:48:28.707768+00:00",
+    "result": "PENDING",
+    "profit_loss": 0.0,
+    "type": "game",
+    "home_team": "SA",
+    "away_team": "OKC",
+    "matchup": "OKC @ SA",
+    "predicted_winner": "SA",
+    "confidence": "LOW",
+    "home_win_prob": 0.5109,
+    "away_win_prob": 0.4891,
+    "pick": "OKC",
+    "notes": "Low 51% confidence \u2014 toss-up, bet small if at all | SA is 75% at home in their last home games",
+    "side": "OKC",
+    "odds_decimal": 2.08,
+    "stake": 100.0
+  },
+  {
     "id": "pred_1779296554766",
     "logged_at": "2026-05-20T17:02:34.766341+00:00",
     "result": "PENDING",
