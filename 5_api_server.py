@@ -680,8 +680,7 @@ async def top_picks(date_str: Optional[str] = None):
                 if abs(edge_pct)<3: continue
                 rec = ("STRONG " if abs(edge_pct)>=10 else "")+pick_side
             else:
-                if proj > avg10*1.05: rec = "OVER (model)"; pick_side = "OVER"
-                else: continue
+                continue  # No real sportsbook line; skip phantom picks
             # Build human-friendly reasons
             stat_word = {"PTS":"points","REB":"rebounds","AST":"assists"}[stat]
             reasons = []
