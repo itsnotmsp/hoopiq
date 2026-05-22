@@ -617,6 +617,15 @@ async def top_picks(date_str: Optional[str] = None):
         p_df = df[df["PLAYER_NAME"]==name]
         if len(p_df)<10: continue
         team = p_df["PLAYER_TEAM"].iloc[-1]
+        # ── DATA FRESHNESS GATE ──
+        # If this player's most recent game is older than their team's
+        # most recent game in our data, they are missing games.
+        # Projections from stale rolling features are unreliable
+        # (Caruso 2026-05-22 lesson).
+        team_latest = df[df["PLAYER_TEAM"] == team]["GAME_DATE"].max()
+        player_latest = p_df["GAME_DATE"].max()
+        if pd.notna(team_latest) and pd.notna(player_latest) and team_latest > player_latest:
+            continue
         # ── INJURY GATE ──
         inj_state, inj_entry = _injury_status(name, team)
         if inj_state == "OUT":
@@ -676,9 +685,14 @@ async def top_picks(date_str: Optional[str] = None):
                 edge = proj - vegas_line; edge_pct = (edge/vegas_line)*100 if vegas_line else 0
                 pick_side = "OVER" if edge>0 else "UNDER"
             confidence = min(99, max(0, consistency*50 + max(-15,min(15,form_trend*100)) + (abs(edge_pct)*1.5 if edge else 0) + 20))
+            MAE_BY_STAT = {"PTS": 4.71, "REB": 1.95, "AST": 1.36, "FPTS": 7.62}
             if vegas_line:
-                if abs(edge_pct)<3: continue
-                rec = ("STRONG " if abs(edge_pct)>=10 else "")+pick_side
+                edge_points = abs(proj - vegas_line)
+                mae = MAE_BY_STAT.get(stat, 4.71)
+                if edge_points < mae:
+                    continue
+                strong = edge_points > mae * 1.5
+                rec = ("STRONG " if strong else "") + pick_side
             else:
                 continue  # No real sportsbook line; skip phantom picks
             # Build human-friendly reasons
@@ -794,6 +808,15 @@ async def top_picks(date_str: Optional[str] = None):
                 f"⚠️ {len(top)-over_n}/{len(top)} picks are UNDER — unusually "
                 f"one-sided. Same caution as an all-OVER slate."
             )
+
+    # ── Propagate bias warning into per-pick confidence ──
+    # When the slate is heavily one-sided, halve every pick's confidence so
+    # the per-pick UI reflects the low-trust signal, not just a banner.
+    if bias_warning:
+        for p in picks:
+            p["confidence"] = round(p["confidence"] * 0.5)
+            p["confidence_label"] = "Low confidence - bet small"
+            p["high_confidence"] = False
 
     return {"date": game_date, "games": len(games),
             "vegas_lines_loaded": len(vegas_lines)>0,
