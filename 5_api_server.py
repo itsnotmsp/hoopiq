@@ -1714,7 +1714,12 @@ async def analyze_game_deep(req: GamePredictRequest):
             return {"days_rest": 3, "is_b2b": False, "is_3in4": False, "games_l7": 0}
         last_game = team_logs.iloc[-1]["GAME_DATE"]
         days_rest = (cutoff - last_game).days
-        is_b2b = days_rest <= 1
+        # Dashboard B2B requires game_date to be the actual upcoming game date.
+        # When the caller passes today's date instead (e.g., game_date=2026-05-30
+        # for a game actually on 2026-05-31), days_rest = 1 misfires as B2B.
+        # Suppress this dashboard signal. The training feature IS_B2B at line ~259
+        # is computed independently per historical game and is unaffected.
+        is_b2b = days_rest == 0
         last3 = team_logs.tail(3)
         is_3in4 = (cutoff - last3.iloc[0]["GAME_DATE"]).days <= 3 if len(last3) >= 3 else False
         from datetime import timedelta
@@ -1775,9 +1780,9 @@ async def analyze_game_deep(req: GamePredictRequest):
 
     # ── 7. SITUATIONAL ANGLES ──
     situational = []
-    if fatigue["home"]["is_b2b"]:
+    if fatigue["home"]["days_rest"] == 0:
         situational.append(f"⚠️ {home} on B2B — historical 3% accuracy drop")
-    if fatigue["away"]["is_b2b"]:
+    if fatigue["away"]["days_rest"] == 0:
         situational.append(f"⚠️ {away} on B2B — fade slightly")
     if fatigue["home"]["is_3in4"]:
         situational.append(f"⚠️ {home} playing 3 games in 4 nights")
@@ -1903,27 +1908,29 @@ async def analyze_game_deep(req: GamePredictRequest):
         market_home_prob = ml_to_prob(market["ml_home"])
         edge_home = home_prob - market_home_prob
 
-        if abs(edge_home) > 0.05:
+        abs_edge = abs(edge_home)
+        if abs_edge > 0.03:
+            if abs_edge > 0.12:
+                ml_verdict = "CHECK MODEL — implausible edge, likely missing context"
+            elif abs_edge > 0.07:
+                ml_verdict = "STRONG VALUE"
+            else:
+                ml_verdict = "VALUE"
             value_analysis["moneyline_value"] = {
                 "side": home if edge_home > 0 else away,
                 "edge_pct": round(edge_home * 100, 1),
                 "model_prob": round(home_prob*100, 1),
                 "implied_prob": round(market_home_prob*100, 1),
-                "verdict": "STRONG VALUE" if abs(edge_home) > 0.10 else "VALUE",
+                "verdict": ml_verdict,
             }
         else:
             value_analysis["moneyline_value"] = {"verdict": "NO VALUE - market efficient"}
 
         if market["total"]:
             total_diff = expected_total - market["total"]
-            if abs(total_diff) > 4:
-                value_analysis["total_value"] = {
-                    "side": "OVER" if total_diff > 0 else "UNDER",
-                    "model_total": round(expected_total, 1),
-                    "market_total": market["total"],
-                    "diff": round(total_diff, 1),
-                    "verdict": "VALUE" if abs(total_diff) > 6 else "MARGINAL",
-                }
+            # NOTE: No totals model is trained. expected_total is heuristic-only,
+            # so the OVER/UNDER value recommendation was removed. The raw diff
+            # is still surfaced via pace_analysis.vs_market_total for context.
             pace_analysis["vs_market_total"] = round(total_diff, 1)
 
     # ── BEST BET ──
@@ -1933,7 +1940,8 @@ async def analyze_game_deep(req: GamePredictRequest):
     # value_analysis fields are None when no market data was available, so guard
     # against that with `or {}` before chaining .get() calls.
     ml_v = value_analysis.get("moneyline_value") or {}
-    if ml_v.get("side") and "edge_pct" in ml_v:
+    if (ml_v.get("side") and "edge_pct" in ml_v
+            and not ml_v.get("verdict", "").startswith("CHECK MODEL")):
         best_bet_options.append({
             "type": "MONEYLINE",
             "side": ml_v["side"],
@@ -1951,10 +1959,19 @@ async def analyze_game_deep(req: GamePredictRequest):
         })
 
     if not best_bet_options:
+        # No value bet identified. The model picking a winner is NOT the same as
+        # having edge vs the market — don't surface predicted_winner as a "best bet".
+        ml_v_verdict = (value_analysis.get("moneyline_value") or {}).get("verdict", "")
+        if ml_v_verdict.startswith("CHECK MODEL"):
+            no_bet_reason = "Model edge implausible — likely missing context"
+        elif "NO VALUE" in ml_v_verdict:
+            no_bet_reason = "No edge vs market — skip"
+        else:
+            no_bet_reason = "No market data available"
         best_bet_options.append({
-            "type": "MONEYLINE",
-            "side": predicted_winner,
-            "verdict": f"{int(confidence*100)}% model confidence",
+            "type": "SKIP",
+            "side": "No value bet",
+            "verdict": no_bet_reason,
             "edge": None,
         })
 
@@ -1962,7 +1979,7 @@ async def analyze_game_deep(req: GamePredictRequest):
     risk_factors = []
     if confidence < 0.55:
         risk_factors.append("⚠️ Low confidence game — close matchup, bet small")
-    if fatigue["home"]["is_b2b"] or fatigue["away"]["is_b2b"]:
+    if fatigue["home"]["days_rest"] == 0 or fatigue["away"]["days_rest"] == 0:
         risk_factors.append("⚠️ B2B game — schedule unpredictable")
     if abs(h_pm) > 8 or abs(a_pm) > 8:
         risk_factors.append("⚠️ Recent blowouts may inflate stats")
