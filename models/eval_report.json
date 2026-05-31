@@ -1,9 +1,9 @@
 {
   "holdout": {
-    "accuracy": 0.6072,
-    "auc": 0.6785,
-    "log_loss": 0.6853,
-    "brier": 0.2256,
+    "accuracy": 0.6318,
+    "auc": 0.6748,
+    "log_loss": 0.6346,
+    "brier": 0.2226,
     "n_samples": 774,
     "leakage_free": true
   },
@@ -11,59 +11,59 @@
     "folds": [
       {
         "fold": 1,
-        "n_train": 1288,
-        "n_test": 1288,
-        "accuracy": 0.5831,
-        "auc": 0.6132,
-        "log_loss": 0.7353,
-        "brier": 0.26
+        "n_train": 1284,
+        "n_test": 1289,
+        "accuracy": 0.5842,
+        "auc": 0.6068,
+        "log_loss": 0.7454,
+        "brier": 0.2629
       },
       {
         "fold": 2,
-        "n_train": 2576,
-        "n_test": 1288,
-        "accuracy": 0.6017,
-        "auc": 0.6168,
-        "log_loss": 0.6843,
-        "brier": 0.2432
+        "n_train": 2573,
+        "n_test": 1289,
+        "accuracy": 0.6082,
+        "auc": 0.6242,
+        "log_loss": 0.6804,
+        "brier": 0.2412
       },
       {
         "fold": 3,
-        "n_train": 3864,
-        "n_test": 1288,
-        "accuracy": 0.6304,
-        "auc": 0.6729,
-        "log_loss": 0.6501,
-        "brier": 0.2282
+        "n_train": 3862,
+        "n_test": 1289,
+        "accuracy": 0.6315,
+        "auc": 0.6766,
+        "log_loss": 0.6445,
+        "brier": 0.2263
       },
       {
         "fold": 4,
-        "n_train": 5152,
-        "n_test": 1288,
-        "accuracy": 0.6266,
-        "auc": 0.6873,
-        "log_loss": 0.645,
-        "brier": 0.2255
+        "n_train": 5151,
+        "n_test": 1289,
+        "accuracy": 0.633,
+        "auc": 0.6882,
+        "log_loss": 0.6431,
+        "brier": 0.2253
       },
       {
         "fold": 5,
         "n_train": 6440,
-        "n_test": 1288,
-        "accuracy": 0.639,
-        "auc": 0.6816,
-        "log_loss": 0.6394,
-        "brier": 0.2238
+        "n_test": 1289,
+        "accuracy": 0.6284,
+        "auc": 0.6706,
+        "log_loss": 0.6477,
+        "brier": 0.2271
       }
     ],
     "summary": {
-      "accuracy_mean": 0.6162,
-      "accuracy_std": 0.0207,
-      "auc_mean": 0.6544,
-      "logloss_mean": 0.6708,
-      "brier_mean": 0.2361
+      "accuracy_mean": 0.6171,
+      "accuracy_std": 0.0187,
+      "auc_mean": 0.6533,
+      "logloss_mean": 0.6722,
+      "brier_mean": 0.2366
     }
   },
-  "headline_accuracy": 0.6162,
+  "headline_accuracy": 0.6171,
   "headline_source": "cv_mean",
   "params": {
     "n_estimators": 600,
@@ -81,5 +81,5 @@
     "n_jobs": -1,
     "tree_method": "hist"
   },
-  "n_features": 91
+  "n_features": 105
 }

@@ -118,8 +118,14 @@ async def load_models():
     if (DATA_DIR / "game_logs.parquet").exists():
         df = pd.read_parquet(DATA_DIR / "game_logs.parquet")
         df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
+        # Derived advanced stats (must mirror 3_feature_engineering.py exactly)
+        df["PACE"] = df["FGA"] + 0.44 * df["FTA"] - df["OREB"] + df["TOV"]
+        ts_denom = (2 * (df["FGA"] + 0.44 * df["FTA"])).replace(0, np.nan)
+        df["TS_PCT"] = (df["PTS"] / ts_denom).fillna(0).clip(0, 1)
+        df["OPP_PTS"] = df.groupby("GAME_ID")["PTS"].transform(lambda x: x.sum() - x)
+        df["DEF_RTG"] = (df["OPP_PTS"] / df["PACE"].replace(0, np.nan) * 100).fillna(110.0).clip(80, 140)
         state.game_log_cache = df
-        log.info(f"Game log cache — {len(df):,} rows")
+        log.info(f"Game log cache — {len(df):,} rows (+ derived stats)")
 
     for target in ["PTS","REB","AST","FPTS"]:
         path = MODEL_DIR / f"prop_{target.lower()}.json"
@@ -192,7 +198,7 @@ def build_game_features(home, away, game_date):
         past = t[t["GAME_DATE"]<cutoff].sort_values("GAME_DATE")
         if len(past)<3: return {}
         l5=past.tail(5); l10=past.tail(10); feat={}
-        for c in ["PTS","FGM","FGA","FG_PCT","FG3M","FG3A","FG3_PCT","FTM","FTA","FT_PCT","OREB","DREB","REB","AST","STL","BLK","TOV","PF","PLUS_MINUS"]:
+        for c in ["PTS","FGM","FGA","FG_PCT","FG3M","FG3A","FG3_PCT","FTM","FTA","FT_PCT","OREB","DREB","REB","AST","STL","BLK","TOV","PF","PLUS_MINUS","PACE","TS_PCT","DEF_RTG"]:
             if c in past.columns:
                 feat[f"ROLL5_{c}"]=l5[c].mean()
                 feat[f"ROLL10_{c}"]=l10[c].mean()
@@ -205,6 +211,7 @@ def build_game_features(home, away, game_date):
         feat["AWAY_AVG_PTS"]=aw["PTS"].mean() if len(aw)>=3 else past["PTS"].mean()
         feat["FORM_WIN_RATE"]=(l10["WL"]=="W").mean() if len(l10)>=3 else 0.5
         feat["FORM_NET_RTG"]=l10["PLUS_MINUS"].mean() if len(l10)>=3 else 0.0
+        feat["IS_PLAYOFF"]=int(cutoff.month >= 4 and cutoff.month <= 6)
         return feat
     h=team_feats(home); a=team_feats(away)
     if not h or not a: return None

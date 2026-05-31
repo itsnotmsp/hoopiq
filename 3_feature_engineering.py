@@ -43,6 +43,7 @@ TEAM_STAT_COLS = [
     "OREB", "DREB", "REB",
     "AST", "STL", "BLK", "TOV", "PF",
     "PLUS_MINUS",
+    "PACE", "TS_PCT", "DEF_RTG",
 ]
 
 
@@ -58,8 +59,18 @@ def load_game_logs() -> pd.DataFrame:
         )
     df = pd.read_parquet(path)
     df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"])
+
+    # Derived advanced stats (per-game, computed before rolling).
+    # Must mirror 5_api_server.py load_models() exactly.
+    df["PACE"] = df["FGA"] + 0.44 * df["FTA"] - df["OREB"] + df["TOV"]
+    ts_denom = (2 * (df["FGA"] + 0.44 * df["FTA"])).replace(0, np.nan)
+    df["TS_PCT"] = (df["PTS"] / ts_denom).fillna(0).clip(0, 1)
+    df["OPP_PTS"] = df.groupby("GAME_ID")["PTS"].transform(lambda x: x.sum() - x)
+    df["DEF_RTG"] = (df["OPP_PTS"] / df["PACE"].replace(0, np.nan) * 100).fillna(110.0).clip(80, 140)
+    df["IS_PLAYOFF"] = ((df["GAME_DATE"].dt.month >= 4) & (df["GAME_DATE"].dt.month <= 6)).astype(int)
+
     df = df.sort_values(["TEAM_ID", "GAME_DATE"]).reset_index(drop=True)
-    console.print(f"Loaded {len(df):,} team-game rows")
+    console.print(f"Loaded {len(df):,} team-game rows (+ PACE/TS_PCT/DEF_RTG/IS_PLAYOFF)")
     return df
 
 
@@ -193,14 +204,14 @@ def build_matchup_features(df: pd.DataFrame) -> pd.DataFrame:
     away = df[df["IS_HOME"] == False].copy()
 
     feature_cols = [c for c in df.columns if any(
-        c.startswith(p) for p in ["ROLL", "H2H", "HOME_", "AWAY_", "FORM_", "REST"]
+        c.startswith(p) for p in ["ROLL", "H2H", "HOME_", "AWAY_", "FORM_", "REST", "IS_PLAYOFF"]
     )]
 
-    home_feats = home[["GAME_ID", "TEAM_ABBREVIATION", "WL"] + feature_cols].copy()
+    home_feats = home[["GAME_ID", "GAME_DATE", "TEAM_ABBREVIATION", "WL"] + feature_cols].copy()
     away_feats = away[["GAME_ID", "TEAM_ABBREVIATION"] + feature_cols].copy()
 
     home_feats.columns = (
-        ["GAME_ID", "HOME_TEAM", "WL_HOME"] +
+        ["GAME_ID", "GAME_DATE", "HOME_TEAM", "WL_HOME"] +
         [f"H_{c}" for c in feature_cols]
     )
     away_feats.columns = (
@@ -232,7 +243,7 @@ def build_matchup_features(df: pd.DataFrame) -> pd.DataFrame:
 def export_feature_info(df: pd.DataFrame) -> None:
     feature_cols = [
         c for c in df.columns
-        if c not in ["GAME_ID", "HOME_TEAM", "AWAY_TEAM", "WL_HOME", "HOME_WIN"]
+        if c not in ["GAME_ID", "GAME_DATE", "HOME_TEAM", "AWAY_TEAM", "WL_HOME", "HOME_WIN"]
     ]
     info = {
         "feature_columns": feature_cols,

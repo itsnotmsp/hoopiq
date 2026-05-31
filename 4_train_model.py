@@ -176,6 +176,24 @@ def train_final(df: pd.DataFrame, feature_cols: list[str], target: str):
     X_cal,   y_cal   = X[train_end:cal_end],   y[train_end:cal_end]
     X_hold,  y_hold  = X[cal_end:],            y[cal_end:]
 
+    # Time-weighted training: exp decay with 365-day half-life.
+    # Most recent training game weight ≈ 1.0; one-year-older ≈ 0.5; etc.
+    if "GAME_DATE" in df.columns:
+        dates = pd.to_datetime(df["GAME_DATE"]).values
+        dates_train = dates[:train_end]
+        most_recent = dates_train.max()
+        days_old = (most_recent - dates_train).astype("timedelta64[D]").astype(float)
+        HALF_LIFE_DAYS = 1095.0
+        sample_weights = 0.5 ** (days_old / HALF_LIFE_DAYS)
+        console.print(
+            f"[dim]Time-weighted: train {pd.Timestamp(dates_train.min()).date()} → "
+            f"{pd.Timestamp(most_recent).date()}; "
+            f"weights {sample_weights.min():.3f} – {sample_weights.max():.3f}[/dim]"
+        )
+    else:
+        sample_weights = None
+        console.print("[yellow]GAME_DATE missing — training without time weights[/yellow]")
+
     console.print(
         f"[dim]Split → train {len(y_train)} | calibrate {len(y_cal)} | "
         f"holdout {len(y_hold)} (holdout is untouched by both)[/dim]"
@@ -184,7 +202,8 @@ def train_final(df: pd.DataFrame, feature_cols: list[str], target: str):
     model = xgb.XGBClassifier(**DEFAULT_PARAMS)
     model.fit(
         X_train, y_train,
-        eval_set=[(X_cal, y_cal)],   # early-stopping watches the cal slice, not holdout
+        sample_weight=sample_weights,
+        eval_set=[(X_cal, y_cal)],
         verbose=100,
     )
 

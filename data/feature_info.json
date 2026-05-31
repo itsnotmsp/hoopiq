@@ -1,5 +1,6 @@
 {
   "feature_columns": [
+    "H_IS_PLAYOFF",
     "H_ROLL5_PTS",
     "H_ROLL10_PTS",
     "H_ROLL5_FGM",
@@ -38,6 +39,12 @@
     "H_ROLL10_PF",
     "H_ROLL5_PLUS_MINUS",
     "H_ROLL10_PLUS_MINUS",
+    "H_ROLL5_PACE",
+    "H_ROLL10_PACE",
+    "H_ROLL5_TS_PCT",
+    "H_ROLL10_TS_PCT",
+    "H_ROLL5_DEF_RTG",
+    "H_ROLL10_DEF_RTG",
     "H_REST_DAYS",
     "H_HOME_WIN_RATE",
     "H_HOME_AVG_PTS",
@@ -47,6 +54,7 @@
     "H_H2H_AVG_MARGIN",
     "H_FORM_WIN_RATE",
     "H_FORM_NET_RTG",
+    "A_IS_PLAYOFF",
     "A_ROLL5_PTS",
     "A_ROLL10_PTS",
     "A_ROLL5_FGM",
@@ -85,6 +93,12 @@
     "A_ROLL10_PF",
     "A_ROLL5_PLUS_MINUS",
     "A_ROLL10_PLUS_MINUS",
+    "A_ROLL5_PACE",
+    "A_ROLL10_PACE",
+    "A_ROLL5_TS_PCT",
+    "A_ROLL10_TS_PCT",
+    "A_ROLL5_DEF_RTG",
+    "A_ROLL10_DEF_RTG",
     "A_REST_DAYS",
     "A_HOME_WIN_RATE",
     "A_HOME_AVG_PTS",
@@ -94,6 +108,7 @@
     "A_H2H_AVG_MARGIN",
     "A_FORM_WIN_RATE",
     "A_FORM_NET_RTG",
+    "DIFF_IS_PLAYOFF",
     "DIFF_ROLL5_PTS",
     "DIFF_ROLL10_PTS",
     "DIFF_ROLL5_FGM",
@@ -132,6 +147,12 @@
     "DIFF_ROLL10_PF",
     "DIFF_ROLL5_PLUS_MINUS",
     "DIFF_ROLL10_PLUS_MINUS",
+    "DIFF_ROLL5_PACE",
+    "DIFF_ROLL10_PACE",
+    "DIFF_ROLL5_TS_PCT",
+    "DIFF_ROLL10_TS_PCT",
+    "DIFF_ROLL5_DEF_RTG",
+    "DIFF_ROLL10_DEF_RTG",
     "DIFF_REST_DAYS",
     "DIFF_HOME_WIN_RATE",
     "DIFF_HOME_AVG_PTS",
@@ -142,12 +163,12 @@
     "DIFF_FORM_WIN_RATE",
     "DIFF_FORM_NET_RTG"
   ],
-  "n_features": 141,
-  "n_samples": 7733,
+  "n_features": 162,
+  "n_samples": 7734,
   "target": "HOME_WIN",
   "label_balance": {
-    "home_wins": 4282,
+    "home_wins": 4283,
     "away_wins": 3451,
-    "home_win_rate": 0.5537
+    "home_win_rate": 0.5538
   }
 }
