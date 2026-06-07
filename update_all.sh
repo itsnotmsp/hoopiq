@@ -7,7 +7,7 @@
 
 set -e
 
-cd ~/Desktop/hoopiq-fresh
+cd ~/Code/hoopiq-fresh
 source venv/bin/activate
 
 echo ""
